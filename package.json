@@ -1,0 +1,8 @@
+{
+  "name": "jsx-render-watcher",
+  "version": "0.0.1",
+  "main": "index.js",
+  "repository": "git@github.com:sliftist/jsx-render-watcher.git",
+  "author": "sliftist <sliftist@gmail.com>",
+  "license": "MIT"
+}
