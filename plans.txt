@@ -1,0 +1,67 @@
+mobx idea
+    - decorators, can be set on class or function, class doesn't take the this context from the class or anything,
+        it is just for backwards compatibility
+    - observer, can either be set on class (in which case it replaces the .render function) or function, and is decorator or just plain
+        - instead of the this context passes an observable, with this as the backing storage for it
+        - calls .forceUpdate on the "this context" that was last passed, when any of the observables accessed in the last
+            run changed. (delaying triggers with Promise.resolve().then)
+        - calling returned function will get the last run result?
+        - calling it always 
+        - returns an observable itself, so it can be used within other observers, etc...
+        - NO PRIMITIVE SUPPORT! USE OBJECTS!
+        - ALWAYS evaluates again when called
+            - however, the returned observable is always the same, so it only needs to be called once if you want to stop always evaluating
+    - autorun, is... just an alias for observer?
+    - computed is a wrapper for observer()(), unwrapping the observable immediately
+    - async observer
+        - unfortunately, not possible. When the the first await comes back accesses will happen and we won't know which
+            observer is waiting for it. With async `new Error()` support we can fake it (albeit at a large performance
+            hit for calling `new Error()`), by checking the async callstack. However, I don't believe this is supported
+            in any browsers yet (although I think you can get node support with a flag).
+
+GENERAL IDEA
+    - When we read things, we call some global function with some id
+    - When we write things, we call some global function with that same id
+    - When we want to subscribe, we run code, and then ask a global function what was read, and then tell it
+        to call us back when those things are written to
+        - Also... we might want the ability to ask a global function what was written to?
+
+TODO (in both preact and react)
+    - Need to know what setState does. Does it wipe out state?
+    - Does forceUpdate happen synchronously sometimes? Do multiple buffered work properly?
+
+UI
+    - with window.open and javascript:, that sort of thing.
+        - but probably just bootstraps to load a real site, still instead the popup though...
+        - can we not use a popup, and just use a real tab?
+    - is basically just a table of observables, which shows the providers they use, and the users that use them
+    - can group observables by "type"-ish, which is just a guess from function name / class name, etc
+    - can turn on "detailed" mode for observables, which makes a new list, that can have values pinned to it,
+        and can have queries typed in it (that use "type", etc)
+        - actually, multiple detailed modes
+            - one for types, so anything that is matched will have a (new Error()) run, to give the line number used to create it
+            - one for providers, to show the line numbers an observable uses each provider on
+            - one for users, that shows the line numbers an observable is used on.
+    - also a table for observers? or just a filter for observers?
+        - And maybe a list of the recent observer evaluations?
+        - And observers also have functions, so... something that makes it easy to see those?
+
+Arrays/objects/iteration
+    - In theory we could also support iteration optimizations. That is, that we could have reads read Object.keys(),
+        and then have subscribe intelligently tell you the key delta
+        - And then... the renderer can detect object maps, and then when it reruns the function do a smart delta,
+            not having to apply the entire map
+            - As writes work based on delta anyway (you say some when something is written to), this would actually work... well...
+            - Of course, the actual mounter would need to understand that the result of render is an observable, and subscribe
+                to it, and handle only updating the writes
+                - OR just call some global function to get the write changes, and apply those efficiently.
+    - OH! Or... arrays could just be arrays, BUT have a special functions called GetCurrentSequenceNumber() and GetDelta(seqStart, seqEnd),
+        which the mounter can check for and be more efficient when it sees that.
+        - And I think... it is possible to implement that interface lazily, so it really just returns the last delta,
+            and warns/throws if more deltas are attempted to be accessed.
+    - So... the writers would have to be able to persist some of the previous state, instead of completely wiping it out.
+        - This should be possible by returning a special type of array, that... has adds and removes? And... there will have to be
+            some global function to get the last evaluated object? So that can be used?
+    - OR... maybe we should ONLY support objects, and not support arrays at all? Although... with arrays we could bootstrap
+        .splice/.push/etc support, which may be nice...
+    - OH! So... make the delta helper functions instead of a Symbol.for, so anyone can access the symbol.
