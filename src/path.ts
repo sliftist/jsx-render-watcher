@@ -2,7 +2,7 @@ const pathPartSuffix = " . ";
 /** A delimitter which can be used to concatentate ordered guids, without colliding with any special characters in the hashes themselves. */
 const safeOrderedGuidHashDelimitter = pathPartSuffix;
 
-export function joinPathHashes(lhs: Observ.Path2, rhs: Observ.Path2): string {
+export function joinPathHashes(lhs: EyeTypes.Path2, rhs: EyeTypes.Path2): string {
     return lhs.pathHash + pathPartSuffix + rhs.pathHash;
 }
 
@@ -11,15 +11,15 @@ const safePathDelimitter = " ... ";
 //export const safePathDelimitter2 = " ..... ";
 
 
-export const rootPath: Observ.Path2 = Object.freeze({
+export const rootPath: EyeTypes.Path2 = Object.freeze({
     path: Object.freeze([]),
     pathHash: pathPartSuffix,
     // Just for debugging, if this causes a performance penalty then we should remove it.
     [Symbol.toPrimitive as any]() { return this.pathHash; }
 });
 
-export function getRootKey(key: PropertyKey): Observ.Path2 {
-    return getChildPath(rootPath, key);
+export function getRootKey(key: PropertyKey, seqNum?: number): EyeTypes.Path2 {
+    return getChildPath(rootPath, key, seqNum);
 }
 
 export function escapePathPart(pathPart: string) {
@@ -34,7 +34,7 @@ export function unescapePathPart(pathPart: string) {
     return pathPart.replace(/\.\./g, ".");
 }
 // TODO: Create a global cache to do this faster. Of course... only once we can find a single case where this function can even measure on a benchmark...
-export function getParentPath(path: Observ.Path2): Observ.Path2 {
+export function getParentPath(path: EyeTypes.Path2): EyeTypes.Path2 {
     let pathHash = path.pathHash;
     let index = pathHash.lastIndexOf(pathPartSuffix, pathHash.length - pathPartSuffix.length - 1);
     if(index === -1) {
@@ -47,10 +47,10 @@ export function getParentPath(path: Observ.Path2): Observ.Path2 {
         [Symbol.toPrimitive as any]() { return this.pathHash; }
     };
 }
-export function getChildPath(path: Observ.Path2, childKey: PropertyKey): Observ.Path2 {
+export function getChildPath(path: EyeTypes.Path2, childKey: PropertyKey, seqNum?: number): EyeTypes.Path2 {
     return {
         path: path.path.concat(childKey),
-        pathHash: getChildHash(path.pathHash, childKey),
+        pathHash: getChildHash(path.pathHash, childKey, seqNum),
         // Just for debugging, if this causes a performance penalty then we should remove it.
         [Symbol.toPrimitive as any]() { return this.pathHash; }
     };
@@ -61,7 +61,7 @@ let symbolSeqNum = 0;
 //  Probably because Symbol.for and resurrect a symbol that doesn't appear to have references. So... let's just
 //  hope no one creates too many symbols...
 let symbolUniqueLookup: { [key in PropertyKey]: number } = Object.create(null);
-function getChildHash(pathHash: string, childKey: PropertyKey): string {
+function getChildHash(pathHash: string, childKey: PropertyKey, seqNum?: number): string {
     let typeText = typeof childKey;
     if(typeof childKey === "symbol") {
         if(!(childKey in symbolUniqueLookup)) {
@@ -69,7 +69,10 @@ function getChildHash(pathHash: string, childKey: PropertyKey): string {
         }
         childKey = String(childKey) + "_" + String(symbolUniqueLookup[childKey as any]);
     }
-    let keyText = typeText + safePathDelimitter + escapePathPart(String(childKey))
+    let keyText = typeText + safePathDelimitter + escapePathPart(String(childKey));
+    if(seqNum !== undefined) {
+        keyText += safePathDelimitter + seqNum;
+    }
     return pathHash + keyText + pathPartSuffix;
 }
 
@@ -101,7 +104,7 @@ export function getLastKeyHash(pathHash: string): string {
     return pathHash.slice(newEnd + pathPartSuffix.length, -pathPartSuffix.length);
 }
 
-export function joinPaths(path: Observ.Path2, childPath: Observ.Path2): Observ.Path2 {
+export function joinPaths(path: EyeTypes.Path2, childPath: EyeTypes.Path2): EyeTypes.Path2 {
     if(childPath.path.length === 0) {
         return path;
     }
@@ -131,7 +134,7 @@ function p(pathString: string): string[] {
 }
 
 /** Debug function to convert from dot paths to a dot path to a path hash */
-export function p2(dotPath: string): Observ.Path2 {
+export function p2(dotPath: string): EyeTypes.Path2 {
     return {
         path: p(dotPath),
         pathHash: pathPartSuffix + p(dotPath).map(x => x + pathPartSuffix).join(""),
@@ -140,7 +143,7 @@ export function p2(dotPath: string): Observ.Path2 {
     };
 }
 
-export function pathFromArray(path: readonly string[]): Observ.Path2 {
+export function pathFromArray(path: readonly string[]): EyeTypes.Path2 {
     return {
         path: path,
         pathHash: pathPartSuffix + path.map(x => x + pathPartSuffix).join(""),

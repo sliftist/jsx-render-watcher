@@ -1,4 +1,4 @@
-import { ObservableMark, ObservableType, ObservablePath } from "./observable";
+import { EyeMark, EyeType, EyePath } from "./eye";
 import { watchAccesses } from "./accessEvents";
 import { insertIntoListMapped, compareString, isEmpty, binarySearchMapped } from "./algorithms";
 import { getParentHash } from "./path";
@@ -17,22 +17,22 @@ import { getParentHash } from "./path";
 //  - The output can stay mostly the same, except both reads and writes will have added/removed properties.
 
 export type AccessState = {
-    reads: { [pathHash: string]: Observ.Path2 };
-    keyReads: { [pathHash: string]: Observ.Path2 };
-    writes: { [pathHash: string]: Observ.Path2 };
+    reads: { [pathHash: string]: EyeTypes.Path2 };
+    keyReads: { [pathHash: string]: EyeTypes.Path2 };
+    writes: { [pathHash: string]: EyeTypes.Path2 };
 };
 
 /** Runs code, and returns the
  * 
- * @param observableOutput IF observableOutput is passed then accesses inside of code won't trigger accesses inside
- *      of wrapper getAccesses calls. However we will ensure observableOutput is accesses, and if it isn't
+ * @param eyeOutput IF eyeOutput is passed then accesses inside of code won't trigger accesses inside
+ *      of wrapper getAccesses calls. However we will ensure eyeOutput is accesses, and if it isn't
  *      we will throw an exception.
  *      - This parameter is used to allow "collapsing" of dependencies via "computed" type functions. In which case depending
  *          on the computed's dependencies (on your dependency's dependencies) is redundant.
 */
 export function getAccesses(
     code: () => void,
-    observableOutput?: { [ObservableMark]: true }
+    eyeOutput?: { [EyeMark]: true }
 ): DeepReadonly<AccessState> {
     let accesses: AccessState = {
         reads: Object.create(null),
@@ -49,6 +49,7 @@ export function getAccesses(
         write(path) {
             accesses.writes[path.pathHash] = path;
         },
+        writeKey() { }
     })
     try {
         code();
@@ -58,28 +59,41 @@ export function getAccesses(
     return accesses;
 }
 
-// TODO: Expose (to some kind of debug utility) the information of which observer is triggering which observer (we know if we are an observer,
+
+// TODO: Expose (to some kind of debug utility) the information of which watcher is triggering which watcher (we know if we are an watcher,
 //  because it will be within a getAccesses call). Of course it may be from a raw location, in which case getting the location information
 //  (via new Error()) is more expensive, but we should support it in some way.
 type PathsWatched = {
-    path: Observ.Path2;
-    callbacks: {
-        [observableOutputPathHash: string]: {
-            callback: (path: Observ.Path2) => void
-        }
-    };
-}[];
-type ObservablePathsWatched = {
-    [observableOutputPathHash: string]: {
+    [pathHash: string]: {
+        path: EyeTypes.Path2;
+        callbacks: {
+            [eyeOutputPathHash: string]: {
+                callback: (path: EyeTypes.Path2) => void
+            }
+        };
+    }
+};
+type EyePaths = {
+    [eyeOutputPathHash: string]: {
         [pathHash: string]: true
     }
 };
 
-let pathsWatched: PathsWatched = [];
-let observablePathsWatched: ObservablePathsWatched = Object.create(null);
+let pathsWatched: PathsWatched = Object.create(null);
+let eyePathsWatched: EyePaths = Object.create(null);
 
-let keysPathsWatched: PathsWatched = [];
-let keysObservablePathsWatched: ObservablePathsWatched = Object.create(null);
+let keysPathsWatched: PathsWatched = Object.create(null);
+let keysEyePathsWatched: EyePaths = Object.create(null);
+
+function trigger(pathHash: string, pathsWatched: PathsWatched) {
+    let callbacksObj = pathsWatched[pathHash];
+    if(!callbacksObj) return;
+
+    let { callbacks } = callbacksObj;
+    for(let callback of Object.values(callbacks).map(x => x.callback)) {
+        callback(callbacksObj.path);
+    }
+}
 
 watchAccesses({
     read(path) {
@@ -90,69 +104,52 @@ watchAccesses({
     },
     write(path) {
         console.log("write", path);
-
-        // Trigger any watchs on this path, or on any children
         trigger(path.pathHash, pathsWatched);
-        trigger(getParentHash(path.pathHash), keysPathsWatched);
-        function trigger(pathHash: string, pathsWatched: PathsWatched) {
-            let index = binarySearchMapped(pathsWatched, pathHash, x => x.path.pathHash, compareString);
-            if(index < 0) index = ~index;
-            let startIndex = index;
-            while(index < pathsWatched.length && pathsWatched[index].path.pathHash.startsWith(pathHash)) {
-                index++;
-            }
-            let endIndex = index;
-            let callbacksTriggered = pathsWatched.slice(startIndex, endIndex).map(x => x.callbacks);
-            for(let callbackLookup of callbacksTriggered) {
-                for(let key in callbackLookup) {
-                    callbackLookup[key].callback(path);
-                }
-            }
-        }
     },
+    writeKey(parentPath, childKey, change) {
+        console.log("change key", parentPath.pathHash, childKey, change);
+        trigger(parentPath.pathHash, keysPathsWatched);
+    }
 });
 
-export function unwatchPaths(observableOutput: ObservableType<unknown>) {
-    watchPaths({ keyReads: Object.create(null), reads: Object.create(null) }, () => {}, observableOutput);
+export function unwatchPaths(eyeOutput: EyeType<unknown>) {
+    watchPaths({ keyReads: Object.create(null), reads: Object.create(null) }, () => {}, eyeOutput);
 }
 
 /** Calls callback whenever any of the read paths OR their parents are changed.
- *      Will replace any existing callbacks on observableOutput. If paths is empty, just removes all callbacks.
+ *      Will replace any existing callbacks on eyeOutput. If paths is empty, just removes all callbacks.
 */
 export function watchPaths(
     pathsObj: Omit<AccessState, "writes">,
-    callback: (path: Observ.Path2) => void,
-    observableOutput: ObservableType<unknown>,
+    callback: (path: EyeTypes.Path2) => void,
+    eyeOutput: EyeType<unknown>,
 ): void {
-    let pathHash = observableOutput[ObservablePath].pathHash;
+    let pathHash = eyeOutput[EyePath].pathHash;
 
-    subscribe(pathsObj.reads, pathsWatched, observablePathsWatched);
-    subscribe(pathsObj.keyReads, keysPathsWatched, keysObservablePathsWatched);
+    subscribe(pathsObj.reads, pathsWatched, eyePathsWatched);
+    subscribe(pathsObj.keyReads, keysPathsWatched, keysEyePathsWatched);
 
-    function subscribe(paths: AccessState["keyReads"]|AccessState["reads"], pathsWatched: PathsWatched, observablePathsWatched: ObservablePathsWatched) {
-        observablePathsWatched[pathHash] = observablePathsWatched[pathHash] || Object.create(null);
-        let prevPaths = observablePathsWatched[pathHash];
+    function subscribe(paths: AccessState["keyReads"]|AccessState["reads"], pathsWatched: PathsWatched, eyePathsWatched: EyePaths) {
+        eyePathsWatched[pathHash] = eyePathsWatched[pathHash] || Object.create(null);
+        let prevPaths = eyePathsWatched[pathHash];
 
         // Add paths that are watched
         for(let key in paths) {
             let path = paths[key];
-            let index = insertIntoListMapped(pathsWatched, { path, callbacks: Object.create(null) }, x => x.path.pathHash, compareString, "ignore");
-            pathsWatched[index].callbacks[pathHash] = { callback };
+            pathsWatched[path.pathHash] = pathsWatched[path.pathHash] || { path, callbacks: Object.create(null) };
+            pathsWatched[path.pathHash].callbacks[pathHash] = { callback };
             prevPaths[key] = true;
         }
 
         // Remove paths that are no longer watched
-        for(let key of Object.keys(prevPaths)) {
-            if(!(key in paths)) {
-                let index = binarySearchMapped(pathsWatched, key, x => x.path.pathHash, compareString);
-                if(index >= 0) {
-                    delete pathsWatched[index].callbacks[pathHash];
-                    if(isEmpty(pathsWatched[index].callbacks)) {
-                        pathsWatched.splice(index, 1);
-                    }
-                }
-                delete prevPaths[key];
+        for(let pathHash of Object.keys(prevPaths)) {
+            if(pathHash in paths) continue;
+            if(!pathsWatched[pathHash]) continue;
+            delete pathsWatched[pathHash].callbacks[pathHash];
+            if(isEmpty(pathsWatched[pathHash].callbacks)) {
+                delete pathsWatched[pathHash]
             }
+            delete prevPaths[pathHash];
         }
     }
 }

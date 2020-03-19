@@ -3,7 +3,7 @@ type DeepReadonly<T> = {
     readonly [P in keyof T]: DeepReadonly<T[P]>;
 };
 
-declare namespace Observ {
+declare namespace EyeTypes {
     type Path2 = DeepReadonly<{
         /** The access path. */
         path: (string|Symbol|number)[];

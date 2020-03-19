@@ -66,3 +66,11 @@ export function isEmpty<T>(obj: {[key: string]: T} | undefined | null): boolean 
     }
     return true;
 }
+
+export function unreachable(): never {
+    throw new Error(`Internal error`);
+}
+
+export function canHaveChildren(value: unknown): value is object {
+    return typeof value === "object" && value !== null || typeof value === "function";
+}

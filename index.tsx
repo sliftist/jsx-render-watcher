@@ -14,7 +14,7 @@ export let page = (
         </head>
         <body>
             <div>
-                {<TestMain />}
+                {<TestMain y={5}/>}
             </div>
             <script type="application/javascript" src="./index.js" defer></script>
             <script type="application/javascript" src="https://cdn.jsdelivr.net/gh/google/code-prettify@master/loader/run_prettify.js" defer></script>

@@ -1,15 +1,15 @@
 import * as preact from "preact";
-import { observable, ObservableRawValue } from "./observable";
+import { eye, EyeRawValue, EyeLevel } from "./eye";
 import { getAccesses } from "./getAccesses";
-import { observer } from "./observer";
+import { watcher } from "./watcher";
 
 /*
-let x = observable({
+let x = eye({
     y: 5,
     z: 2,
 });
 
-let observedFunction = observer(() => {
+let observedFunction = watcher(() => {
     let sum = 0;
     for(let key in x) {
         sum += (x as any)[key];
@@ -34,46 +34,31 @@ console.log(observedFunction.call(updateHolder).sum);
 })();
 */
 
-// Force observer to get included
-observer(() => {});
+// Force watcher to get included
+watcher(() => {});
 
+class Test {
+    #test = 5;
+}
 
-let wtf = observable({x: 5});
-
-//todonext;
-// Okay... the problem is that setState wipes out the state object, which means new properties on it
-//  no longer become observables.
-// Oh right, I was planning on doing something with the this context...
-//  Uh... okay... I could make it so everything accessed inside of the this context gets turned into
-//  an observable, AS it is accessed?
-//  - Hmm... this is nice, because if setState is called, it wipes out the root observable, but
-//      render gets called anyway!
-//  - I think the only downside... is if the state is directly passed to another component?
-//  - I'm trying to think... is there a case where this would keep remaking an observable for the same
-//      path, because of setState wiping it out? I don't think there is... the observable tree will
-//      still virtually exist, and just be reused...
-//      - One case could be if state is used as a lookup, and setState is called to remove values.
-//          We won't know they are deleted (as we don't check, we just wait for deleteProperty), so...
-//          that would cause a memory leak...
-
-export class TestMain extends preact.Component<{}, {}> {
+export class TestMain extends preact.Component<{ y: number }, {}> {
     state = {
-        x: 0
+        x: 0,
+        lookup: {} as { [key: number]: true }
     };
+
+    test = eye({ y: 5 });
 
     componentDidMount() {
         setInterval(() => {
             this.state.x++;
+            (this as any).props.y++;
+            this.test.y++;
+            this.state.lookup[Date.now()] = true;
         }, 1000);
     }
 
-    public render = (() => {
-        //todonext;
-        // Works with preact (maybe), now... test this with react.
-        //  Then get the debugging utilities working, so we are sure we know what is going on.
-        let thisObservable = observable(this, undefined, true);
-        return observer(function(this: TestMain) {
-            return <div>test {+thisObservable.state.x}</div>;
-        });
-    })();
+    public render = watcher(function(this: TestMain) {
+        return <div>test {this.state.x}, {this.props.y}, {this.test.y}, {Object.keys(this.state.lookup).length}</div>;
+    }, EyeLevel.eye3_replace);
 }
