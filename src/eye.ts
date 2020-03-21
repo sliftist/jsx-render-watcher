@@ -1,6 +1,7 @@
 import { registerReadAccess, registerWrite, registerKeysReadAccess, registerOwnKeysWrite } from "./accessEvents";
 import { getRootKey, getChildPath } from "./path";
 import { unreachable, canHaveChildren } from "./algorithms";
+import { g } from "./misc";
 
 /** Returned from eyes, to indicate what they are. */
 export const EyeMark = Symbol("EyeMark");
@@ -51,29 +52,35 @@ let pathSeqNum = 0;
  */
 export function eye<T extends object>(
     initialState: T,
-    level = EyeLevel.eye0_pure
+    level = EyeLevel.eye0_pure,
+    niceName?: string
 ): EyeType<T> {
     let i = initialState as any;
-    let niceName = i.name || i.constructor.name || "";
-    let path: EyeTypes.Path2 = getRootKey(niceName, pathSeqNum++);
+    let niceNameTyped = niceName || i.name || i.constructor && i.constructor.name || "";
+    let path: EyeTypes.Path2 = getRootKey(niceNameTyped, pathSeqNum++);
     return eyeInternal(initialState, path, level, true);
 }
 
 /** Eye is pure, it does not mutate underlying state (and so is stored as a replacement of the state) */
-export function eye0_pure<T extends object>(initialState: T) {
-    return eye(initialState, EyeLevel.eye0_pure);
+export function eye0_pure<T extends object>(initialState: T, niceName?: string) {
+    return eye(initialState, EyeLevel.eye0_pure, niceName);
 }
 /** Eye writes symbols to the root state (and may or may not be stored as a replacement of the state) */
-export function eye1_root<T extends object>(initialState: T) {
-    return eye(initialState, EyeLevel.eye1_root);
+export function eye1_root<T extends object>(initialState: T, niceName?: string) {
+    return eye(initialState, EyeLevel.eye1_root, niceName);
 }
 /** Eye writes symbols to the entire tree */
-export function eye2_tree<T extends object>(initialState: T) {
-    return eye(initialState, EyeLevel.eye2_tree);
+export function eye2_tree<T extends object>(initialState: T, niceName?: string) {
+    return eye(initialState, EyeLevel.eye2_tree, niceName);
 }
 /** Eye writes symbols to the root, and then replaces the entire tree with eyes (and writes symbols) */
-export function eye3_replace<T extends object>(initialState: T) {
-    return eye(initialState, EyeLevel.eye3_replace);
+export function eye3_replace<T extends object>(initialState: T, niceName?: string) {
+    return eye(initialState, EyeLevel.eye3_replace, niceName);
+}
+
+(g as any).__eye_testIsEye = testIsEye;
+export function testIsEye(obj: unknown) {
+    return canHaveChildren(obj) && EyePath in obj;
 }
 
 function eyeInternal<T extends object>(
@@ -239,6 +246,9 @@ function eyeInternal<T extends object>(
                 if(propBadType === EyeRawValue) return initialState;
                 if(propBadType === eyeSymbol) return eyeForReturn;
                 if(propBadType === UnEyeMark) return true;
+                if(typeof propBadType === "symbol") {
+                    console.log(`Read symbol ${String(propBadType)}`);
+                }
                 return onRead(propBadType);
             },
             // Won't defineProperty get called anyway?
@@ -279,9 +289,14 @@ function eyeInternal<T extends object>(
                 registerKeysReadAccess(path);
                 return Reflect.ownKeys(initialState);
             },
-            apply(target, thisArg, argumentsList) {
+            
+            apply(targetBadType, thisArg, argumentsList) {
+                let target = targetBadType as object|Function;
                 // TODO: For 'incompatible receivers', hardcode an understanding of the function (in terms of reads/writes)
                 //  here, and then apply with parentContext as the thisArg instead.
+                if(typeof target === "function" && String(target).endsWith("{ [native code] }")) {
+                    throw new Error(`Implementation of native function '${target.name}' not supported. Calling of native functions may mutate your data without change tracking, and so it is disable for unsupported native functions.`);
+                }
                 return Reflect.apply(initialState as Function, thisArg, argumentsList);
             }
         });

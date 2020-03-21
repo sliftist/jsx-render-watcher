@@ -6,6 +6,7 @@ function getConfig(env, argv) {
         mode: "development",
         entry: {
             index: "./index.tsx",
+            debugUtils: "./src/debugUtils/debugUtils.tsx",
         },
         output: {
             path: path.resolve(__dirname, "dist"),

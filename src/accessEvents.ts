@@ -1,15 +1,24 @@
-type WatchCallbacks = {
-    read: (path: EyeTypes.Path2) => void;
-    readKeys: (path: EyeTypes.Path2) => void;
+import { UnionUndefined } from "./misc";
+
+type WatchWriteCallbacks = {
     write: (path: EyeTypes.Path2) => void;
     writeKey: (parentPath: EyeTypes.Path2, childKey: PropertyKey, change: "add"|"remove") => void;
 };
+type WatchReadCallbacks = {
+    read: (path: EyeTypes.Path2) => void;
+    readKeys: (path: EyeTypes.Path2) => void;
+};
 
 let watchCallbacksSeqNum = 0;
-let watchCallbacksLookup: { [seqNum: number]: WatchCallbacks } = Object.create(null);
+let watchCallbacksLookup: { [seqNum: number]: WatchWriteCallbacks } = Object.create(null);
+
+let g = new Function("return this")();
+g.watchCallbacksLookup = watchCallbacksLookup;
+
+let readCallbacks: WatchReadCallbacks[] = [];
 
 export function watchAccesses(
-    watchCallbacks: WatchCallbacks
+    watchCallbacks: WatchWriteCallbacks
 ): {
     unwatch: () => void
 } {
@@ -22,25 +31,27 @@ export function watchAccesses(
     };
 }
 
+/** Nested calls are namespaced, not triggering reads in parent calls. */
+export function getReads(code: () => void, callbacks: WatchReadCallbacks) {
+    readCallbacks.push(callbacks);
+    try {
+        code();
+    } finally {
+        readCallbacks.pop();
+    }
+}
+
 export function registerReadAccess(path: EyeTypes.Path2) {
-    for(let key in watchCallbacksLookup) {
-        let pendingAccess = watchCallbacksLookup[key];
-        try {
-            pendingAccess.read(path);
-        } catch(e) {
-            console.error(`read access callback threw an error`, e);
-        }
+    let callbacks = UnionUndefined(readCallbacks[readCallbacks.length - 1]);
+    if(callbacks) {
+        callbacks.read(path);
     }
 }
 
 export function registerKeysReadAccess(path: EyeTypes.Path2) {
-    for(let key in watchCallbacksLookup) {
-        let pendingAccess = watchCallbacksLookup[key];
-        try {
-            pendingAccess.readKeys(path);
-        } catch(e) {
-            console.error(`read access callback threw an error`, e);
-        }
+    let callbacks = UnionUndefined(readCallbacks[readCallbacks.length - 1]);
+    if(callbacks) {
+        callbacks.readKeys(path);
     }
 }
 

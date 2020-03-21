@@ -1,5 +1,5 @@
 import * as preact from "preact";
-import { TestMain } from "./src/test";
+import { DebugUtils } from "./debugUtilsMain";
 
 export let page = (
     <html>
@@ -14,13 +14,12 @@ export let page = (
         </head>
         <body>
             <div>
-                {<TestMain y={5}/>}
+                <DebugUtils />
             </div>
-            <script type="application/javascript" src="./index.js" defer></script>
+            <script type="application/javascript" src="./debugUtils.js" defer></script>
         </body>
     </html>
 );
-
 
 if(typeof window !== "undefined") {
     preact.render(page, document);

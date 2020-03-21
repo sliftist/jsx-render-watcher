@@ -1,7 +1,9 @@
 import { EyeMark, EyeType, EyePath } from "./eye";
-import { watchAccesses } from "./accessEvents";
+import { watchAccesses, getReads } from "./accessEvents";
 import { insertIntoListMapped, compareString, isEmpty, binarySearchMapped } from "./algorithms";
 import { getParentHash } from "./path";
+import { g } from "./misc";
+import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 
 // NOTE: At the end of the day, this requires a code() callback, instead of "startWatch" and "endWatch" functions, simply
 //      for performance reasons. Keeping track of changes takes memory, and so we don't want to keep track of changes
@@ -22,40 +24,23 @@ export type AccessState = {
     writes: { [pathHash: string]: EyeTypes.Path2 };
 };
 
-/** Runs code, and returns the
- * 
- * @param eyeOutput IF eyeOutput is passed then accesses inside of code won't trigger accesses inside
- *      of wrapper getAccesses calls. However we will ensure eyeOutput is accesses, and if it isn't
- *      we will throw an exception.
- *      - This parameter is used to allow "collapsing" of dependencies via "computed" type functions. In which case depending
- *          on the computed's dependencies (on your dependency's dependencies) is redundant.
-*/
+/** Runs code, and returns the reads/writes. */
 export function getAccesses(
-    code: () => void,
-    eyeOutput?: { [EyeMark]: true }
+    code: () => void
 ): DeepReadonly<AccessState> {
     let accesses: AccessState = {
         reads: Object.create(null),
         keyReads: Object.create(null),
         writes: Object.create(null),
     };
-    let { unwatch } = watchAccesses({
+    getReads(code, {
         read(path) {
             accesses.reads[path.pathHash] = path;
         },
         readKeys(path) {
             accesses.keyReads[path.pathHash] = path;
         },
-        write(path) {
-            accesses.writes[path.pathHash] = path;
-        },
-        writeKey() { }
-    })
-    try {
-        code();
-    } finally {
-        unwatch();
-    }
+    });
     return accesses;
 }
 
@@ -73,17 +58,23 @@ type PathsWatched = {
         };
     }
 };
-type EyePaths = {
+type WatcherPaths = {
     [eyeOutputPathHash: string]: {
         [pathHash: string]: true
     }
 };
 
-let pathsWatched: PathsWatched = Object.create(null);
-let eyePathsWatched: EyePaths = Object.create(null);
 
+let pathsWatched: PathsWatched = Object.create(null);
 let keysPathsWatched: PathsWatched = Object.create(null);
-let keysEyePathsWatched: EyePaths = Object.create(null);
+
+let eyePathsWatched: WatcherPaths = Object.create(null);
+let keysEyePathsWatched: WatcherPaths = Object.create(null);
+
+exposeDebugLookup("eyePathsWatched", eyePathsWatched, x => eyePathsWatched = x);
+
+(g as any).eyePathsWatched = eyePathsWatched;
+(g as any).keysEyePathsWatched = keysEyePathsWatched;
 
 function trigger(pathHash: string, pathsWatched: PathsWatched) {
     let callbacksObj = pathsWatched[pathHash];
@@ -96,12 +87,6 @@ function trigger(pathHash: string, pathsWatched: PathsWatched) {
 }
 
 watchAccesses({
-    read(path) {
-        console.log("read", path);
-    },
-    readKeys(path) {
-        console.log("read keys", path);
-    },
     write(path) {
         console.log("write", path);
         trigger(path.pathHash, pathsWatched);
@@ -112,8 +97,8 @@ watchAccesses({
     }
 });
 
-export function unwatchPaths(eyeOutput: EyeType<unknown>) {
-    watchPaths({ keyReads: Object.create(null), reads: Object.create(null) }, () => {}, eyeOutput);
+export function unwatchPaths(accessId: string) {
+    watchPaths({ keyReads: Object.create(null), reads: Object.create(null) }, () => {}, accessId);
 }
 
 /** Calls callback whenever any of the read paths OR their parents are changed.
@@ -122,14 +107,14 @@ export function unwatchPaths(eyeOutput: EyeType<unknown>) {
 export function watchPaths(
     pathsObj: Omit<AccessState, "writes">,
     callback: (path: EyeTypes.Path2) => void,
-    eyeOutput: EyeType<unknown>,
+    accessId: string,
 ): void {
-    let pathHash = eyeOutput[EyePath].pathHash;
+    let pathHash = accessId;
 
     subscribe(pathsObj.reads, pathsWatched, eyePathsWatched);
     subscribe(pathsObj.keyReads, keysPathsWatched, keysEyePathsWatched);
 
-    function subscribe(paths: AccessState["keyReads"]|AccessState["reads"], pathsWatched: PathsWatched, eyePathsWatched: EyePaths) {
+    function subscribe(paths: AccessState["keyReads"]|AccessState["reads"], pathsWatched: PathsWatched, eyePathsWatched: WatcherPaths) {
         eyePathsWatched[pathHash] = eyePathsWatched[pathHash] || Object.create(null);
         let prevPaths = eyePathsWatched[pathHash];
 

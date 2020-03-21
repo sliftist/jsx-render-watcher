@@ -13,3 +13,8 @@ declare namespace EyeTypes {
         pathHash: string;
     }>;
 }
+
+declare let x: number;
+interface Window {
+    __exposeDebugLookupDebugger?: <T extends { [key in PropertyKey]: unknown }>(lookup: T, name: string) => T;
+}
