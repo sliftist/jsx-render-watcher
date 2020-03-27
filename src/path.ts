@@ -1,14 +1,20 @@
 const pathPartSuffix = " . ";
-/** A delimitter which can be used to concatentate ordered guids, without colliding with any special characters in the hashes themselves. */
-const safeOrderedGuidHashDelimitter = pathPartSuffix;
+
 
 export function joinPathHashes(lhs: EyeTypes.Path2, rhs: EyeTypes.Path2): string {
     return lhs.pathHash + pathPartSuffix + rhs.pathHash;
 }
 
 
-const safePathDelimitter = " ... ";
-//export const safePathDelimitter2 = " ..... ";
+const subPathDelimitter = " .# ";
+const keyPathDelimitter = ` .$ `;
+
+// If the suffix is replaced with this, then it will sort after all children. This is because
+//  the "." character cannot exist in isolation (it will be escaped), and as "#" > " ", this will sort
+//  after all of the children, but before any non-children that were simply escaped, that could only escape
+//  to " .." at best, and as "#" < ".", this will sort before them.
+const lastChildSuffix = " .-";
+
 
 
 export const rootPath: EyeTypes.Path2 = Object.freeze({
@@ -18,20 +24,27 @@ export const rootPath: EyeTypes.Path2 = Object.freeze({
     [Symbol.toPrimitive as any]() { return this.pathHash; }
 });
 
-export function getRootKey(key: PropertyKey, seqNum?: number): EyeTypes.Path2 {
-    return getChildPath(rootPath, key, seqNum);
+/** Hash guaranteed to be > all path hashes */
+export const hashAfterLastPath = lastChildSuffix;
+
+export function getRootKey(key: PropertyKey | PropertyKey[]): EyeTypes.Path2 {
+    return getChildPath(rootPath, key);
 }
 
 export function escapePathPart(pathPart: string) {
     if(typeof pathPart !== "string") {
         debugger;
     }
-    // TODO: A pathPart.indexOf check here would probably make this a lot faster. But we should wait for a benchmark before we change it.
-    return pathPart.replace(/\./g, "..");
+    // TODO: A pathPart.indexOf check to early out when we don't have to run this would probably be a lot faster. But we should wait for a benchmark before we change it.
+    return (
+        pathPart
+        .replace(/\./g, "..")
+    );
 }
-export function unescapePathPart(pathPart: string) {
-    // TODO: A pathPart.indexOf check here would probably make this a lot faster. But we should wait for a benchmark before we change it.
-    return pathPart.replace(/\.\./g, ".");
+function unescapePathPart(pathPart: string) {
+    return (
+        pathPart.replace(/\.\./g, ".")
+    );
 }
 // TODO: Create a global cache to do this faster. Of course... only once we can find a single case where this function can even measure on a benchmark...
 export function getParentPath(path: EyeTypes.Path2): EyeTypes.Path2 {
@@ -47,33 +60,122 @@ export function getParentPath(path: EyeTypes.Path2): EyeTypes.Path2 {
         [Symbol.toPrimitive as any]() { return this.pathHash; }
     };
 }
-export function getChildPath(path: EyeTypes.Path2, childKey: PropertyKey, seqNum?: number): EyeTypes.Path2 {
+
+
+export function getChildPath(path: EyeTypes.Path2, childKeyRaw: Readonly<PropertyKey | PropertyKey[]>): EyeTypes.Path2 {
+    // Cast, so Array.isArray works.
+    let childKey: PropertyKey | PropertyKey[] = childKeyRaw as any;
+    if(Array.isArray(childKey)) {
+        childKey = childKey.map(x => getKeyHash(x)).join(subPathDelimitter);
+    } else {
+        childKey = getKeyHash(childKey);
+    }
+    let pathHash = path.pathHash + childKey + pathPartSuffix;
     return {
         path: path.path.concat(childKey),
-        pathHash: getChildHash(path.pathHash, childKey, seqNum),
+        pathHash: pathHash,
         // Just for debugging, if this causes a performance penalty then we should remove it.
         [Symbol.toPrimitive as any]() { return this.pathHash; }
     };
 }
 
+export function expandChildPaths(path: EyeTypes.Path2): (PropertyKey | PropertyKey[])[] {
+    return path.path.map(x => typeof x === "string" ? x.split(subPathDelimitter).map(getKeyFromHash) : x);
+}
+
+export function getHashAfterLastChild(hash: string): string {
+    if(!hash.endsWith(pathPartSuffix)) {
+        throw new Error(`Internal error, path is invalid`);
+    }
+    return hash.slice(0, -pathPartSuffix.length) + lastChildSuffix;
+}
+
+
 let symbolSeqNum = 0;
-// TODO: This is a memory leak. However, I don't see how else to do it. WeakMaps only accept object keys.
-//  Probably because Symbol.for and resurrect a symbol that doesn't appear to have references. So... let's just
+// TODO: This is a memory leak. However, I don't see how else to do it. WeakMaps only accept object keys, which would be the only way to do this.
+//  Probably because Symbol.for resurrect a symbol that doesn't appear to have references. So... let's just
 //  hope no one creates too many symbols...
-let symbolUniqueLookup: { [key in PropertyKey]: number } = Object.create(null);
-function getChildHash(pathHash: string, childKey: PropertyKey, seqNum?: number): string {
-    let typeText = typeof childKey;
-    if(typeof childKey === "symbol") {
-        if(!(childKey in symbolUniqueLookup)) {
-            symbolUniqueLookup[childKey as any] = symbolSeqNum++;
+let symbolUniqueLookup: { [key in symbol]: number|string } = Object.create(null);
+let symbolReverseLookup: { [key: string]: symbol } = Object.create(null);
+
+export function definePathSymbolName(symbol: symbol, id: string) {
+    if(id.startsWith("Symbol(")) {
+        throw new Error(`Tried to define id that may conflict with automatically generated symbol id. Don't do that.`);
+    }
+    if(symbol in symbolUniqueLookup) {
+        throw new Error(`Tried to defined symbol name twice. Was ${(symbolUniqueLookup as any)[symbol]}, tried to define it again as ${id}`);
+    }
+    if(id in symbolReverseLookup) {
+        throw new Error(`Tried to defined two symbol to the same id. Id ${id}`);
+    }
+    (symbolUniqueLookup as any)[symbol] = id;
+    symbolReverseLookup[id] = symbol;
+}
+
+function getKeyHash(key: PropertyKey) {
+    let typeText: string = typeof key;
+    if(typeText === "string") {
+        typeText = "";
+    } else if(typeText === "number") {
+        typeText = "n";
+    } else if(typeText === "symbol") {
+        typeText = "s";
+    }
+    if(typeof key === "symbol") {
+        if(!(key in symbolUniqueLookup)) {
+            (symbolUniqueLookup as any)[key] = symbolSeqNum++;
         }
-        childKey = String(childKey) + "_" + String(symbolUniqueLookup[childKey as any]);
+        let id = (symbolUniqueLookup as any)[key];
+        if(typeof id === "string") {
+            key = id;
+        } else {
+            key = String(key) + "_" + String((symbolUniqueLookup as any)[key]);
+        }
     }
-    let keyText = typeText + safePathDelimitter + escapePathPart(String(childKey));
-    if(seqNum !== undefined) {
-        keyText += safePathDelimitter + seqNum;
+    let keyText;
+    if(typeText === "") {
+        keyText = escapePathPart(String(key));
+    } else {
+        keyText = typeText + keyPathDelimitter + escapePathPart(String(key));
     }
-    return pathHash + keyText + pathPartSuffix;
+    return keyText;
+}
+function getKeyFromHash(hash: string): PropertyKey {
+    let typeArr = hash.split(keyPathDelimitter);
+    if(typeArr.length === 1) {
+        return unescapePathPart(typeArr[0]);
+    }
+    if(typeArr.length !== 2) {
+        throw new Error(`Invalid key hash`);
+    }
+    let type = typeArr[0];
+    let value: string = unescapePathPart(typeArr[1]);
+    if(type === "") {
+        return value;
+    } else if(type === "n") {
+        return +value;
+    } else if(type === "s") {
+        if(!(value in symbolReverseLookup)) {
+            debugger;
+            throw new Error(`Invalid symbol id ${value}`);
+        }
+        return symbolReverseLookup[value];
+    } else {
+        throw new Error(`Invalid key hash, type ${type}`);
+    }
+}
+
+
+
+/** Should only be used if you need to load from the disk, and if any symbols are encountered a definition must have been defined with definedPathSymbolName. */
+export function getPathFromHash(pathHash: string): EyeTypes.Path2 {
+    //todonext;
+    // UGH... we need to go from hash to path, so we can load them off the disk...
+    //  Uh... this works, we can just throw an error if there is a symbol that hasn't been defined with definePathSymbolName...
+    let parts = pathHash.split(pathPartSuffix).slice(1, -1);
+    let path = parts.map(x => x.split(subPathDelimitter).map(getKeyFromHash));
+
+    return pathFromArray(path);
 }
 
 
@@ -143,11 +245,46 @@ export function p2(dotPath: string): EyeTypes.Path2 {
     };
 }
 
-export function pathFromArray(path: readonly string[]): EyeTypes.Path2 {
-    return {
-        path: path,
-        pathHash: pathPartSuffix + path.map(x => x + pathPartSuffix).join(""),
-        // Just for debugging, if this causes a performance penalty then we should remove it.
-        [Symbol.toPrimitive as any]() { return this.pathHash; }
-    };
+let inPathFromArray = false;
+export function pathFromArray(path: DeepReadonly<(PropertyKey | PropertyKey[])[]>): EyeTypes.Path2 {
+    let curPath = rootPath;
+    for(let key of path) {
+        curPath = getChildPath(curPath, key);
+    }
+
+    /*
+    if(!inPathFromArray) {
+        inPathFromArray = true;
+        try {
+            let pathTest = getPathFromHash(curPath.pathHash).path;
+            if(path.length !== pathTest.length) {
+                debugger;
+            }
+            for(let i = 0; i < path.length; i++) {
+                let a = path[i];
+                let b = pathTest[i];
+                if(Array.isArray(a) !== Array.isArray(b)) {
+                    debugger;
+                    getPathFromHash(curPath.pathHash);
+                }
+                if(Array.isArray(a) && Array.isArray(b)) {
+                    if(a.length !== b.length) {
+                        debugger;
+                    }
+                    for(let j = 0; j < a.length; j++) {
+                        if(a[j] !== b[j]) {
+                            debugger;
+                        }
+                    }
+                } else if(a !== b) {
+                    debugger;
+                }
+            }
+        } finally {
+            inPathFromArray = false;
+        }
+    }
+    */
+
+    return curPath;
 }

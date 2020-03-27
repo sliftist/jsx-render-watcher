@@ -1,5 +1,5 @@
 import { watchAccesses } from "./accessEvents";
-import { eye, Eye1_root, EyeType, eye1_root, eye0_pure, EyeLevel, EyePath } from "./eye";
+import { eye, Eye1_root, EyeType, eye1_root, eye0_pure, EyeLevel, EyePath, GetUniqueRootPath } from "./eye";
 import { getAccesses, watchPaths, AccessState, unwatchPaths } from "./getAccesses";
 import { canHaveChildren } from "./algorithms";
 import { getRootKey, pathFromArray } from "./path";
@@ -19,19 +19,22 @@ type ObserverThisContext = {
 // NOTE: We don't accept any arguments, as this should act as a singleton, not accepting any arguments.
 //  IF you want a function memoizer, wrap this with something that keeps a context per set of arguments.
 
-
 export function derived<T extends unknown>(
     fnc: () => T,
+    niceName?: string,
     thisContextEyeLevel?: EyeLevel,
-    niceName?: string
+    config?: {
+        singleton: boolean
+    }
 ): T {
-    let outputEye = eye0_pure({} as { [key in PropertyKey]: unknown }, niceName);
+    let outputEye = eye0_pure({} as { [key in PropertyKey]: unknown }, niceName, config);
 
     let run!: typeof runRaw; 
     function runRaw(this: typeof context) {
         return fnc();
     }
     let context = {
+        name: niceName || fnc.name,
         forceUpdate() {
             let output = run.call(context);
             function setRecursive(target: any, source: any) {
@@ -58,7 +61,7 @@ export function derived<T extends unknown>(
             setRecursive(outputEye, output);
         }
     };
-    run = derivedRaw(runRaw, outputEye[EyePath].pathHash, thisContextEyeLevel);
+    run = derivedRaw(runRaw, { path: outputEye[EyePath], thisContextEyeLevel });
     context.forceUpdate();
 
     return outputEye as T;
@@ -66,11 +69,19 @@ export function derived<T extends unknown>(
 
 export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
     fnc: (this: This) => T,
-    niceName?: string,
-    thisContextEyeLevel?: EyeLevel,
+    config: {
+        niceName?: string;
+        path?: EyeTypes.Path2;
+        thisContextEyeLevel?: EyeLevel;
+    }
 ): (this: This) => T {
 
-    let path = pathFromArray([niceName || "", Math.random().toString(), Date.now().toString()]);
+    let { niceName, path, thisContextEyeLevel } = config;
+
+    if(!path) {
+        path = GetUniqueRootPath(niceName);
+    }
+    let pathTyped = path;
 
     let disposed = false;
     let pendingChange = false;
@@ -82,7 +93,7 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
         // TODO: Hook this up via an argument, like forceUpdate, but... something like 'addDisposeCallback'.
         [DisposeSymbol]: () => {
             disposed = true;
-            unwatchPaths(path.pathHash);
+            unwatchPaths(pathTyped.pathHash);
         }
     });
 
@@ -93,7 +104,11 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
         const onChanged = (path: EyeTypes.Path2) => {
             if(pendingChange) return;
             pendingChange = true;
+            let name = (this as any).name || this.constructor.name;
+            //debugger;
+            console.info(`Schedule triggering of derived ${name}`);
             Promise.resolve().then(() => {
+                console.info(`Inside triggering of derived ${name}`);
                 pendingChange = false;
                 this.forceUpdate();
             });
@@ -110,7 +125,7 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
                 output = fnc.apply(thisContext);
             }
         );
-        watchPaths(accesses, onChanged, path.pathHash);
+        watchPaths(accesses, onChanged, pathTyped.pathHash);
         return output;
     }
 }

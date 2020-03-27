@@ -37,7 +37,7 @@ function getConfig(env, argv) {
             ]
         },
         resolveLoader: {
-            //modules: ["node_modules", "./loaders"]
+            modules: ["node_modules", "./loaders"]
         },
         plugins: [
             //new (require('webpack-bundle-analyzer').BundleAnalyzerPlugin)()

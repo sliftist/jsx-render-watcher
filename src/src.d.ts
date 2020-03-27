@@ -6,15 +6,24 @@ type DeepReadonly<T> = {
 declare namespace EyeTypes {
     type Path2 = DeepReadonly<{
         /** The access path. */
-        path: (string|Symbol|number)[];
+        path: (string|symbol|number)[];
         /** Paths hashes are comparable via regular comparison operators. Also, the root path is truthy, and we can get the parent of a path without
          *      having to worry about escape characters, so path navigation is relatively fast.
          */
         pathHash: string;
     }>;
+
+    type ExposedLookup = { [key in PropertyKey]: object };
 }
 
-declare let x: number;
 interface Window {
-    __exposeDebugLookupDebugger?: <T extends { [key in PropertyKey]: unknown }>(lookup: T, name: string) => T;
+    __exposeExposedLookups: {
+        [name: string]: {
+            lookup: EyeTypes.ExposedLookup;
+            setLookup: (newLookup: EyeTypes.ExposedLookup) => void;
+        }
+    };
+    __connectToDebugUtils(): void;
+
+    __launchDebugUtils(): Promise<void>;
 }

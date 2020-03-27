@@ -8,6 +8,7 @@ export function binarySearchMapped<T, M>(list: T[], value: M, map: (t: T) => M, 
     });
 }
 
+/** Always returns the index of the first match in the list. */
 export function binarySearch<T>(list: T[], value: T, comparer: (lhs: T, rhs: T) => number): number {
     if(!list) {
         debugger;
@@ -17,15 +18,23 @@ export function binarySearch<T>(list: T[], value: T, comparer: (lhs: T, rhs: T) 
 
     while (minIndex < maxIndex) {
         let fingerIndex = ~~((maxIndex + minIndex) / 2);
-        //if (fingerIndex >= list.length) return ~fingerIndex;
+        // Try to increase the minIndex if the finger is in the middle
+        if(minIndex + 2 === maxIndex) {
+            fingerIndex = minIndex;
+        }
         let finger = list[fingerIndex];
         let comparisonValue = comparer(value, finger);
-        if(comparisonValue < 0) {
-            maxIndex = fingerIndex;
-        } else if(comparisonValue > 0) {
+        // Check the minIndex first
+        if(comparisonValue > 0) {
             minIndex = fingerIndex + 1;
+        } else if(comparisonValue < 0) {
+            maxIndex = fingerIndex;
         } else {
-            return fingerIndex;
+            // Modification to keep searching until we get to the first element that matches.
+            if(minIndex + 1 === maxIndex) {
+                return fingerIndex;
+            }
+            maxIndex = fingerIndex + 1;
         }
     }
     return ~minIndex;
@@ -71,6 +80,7 @@ export function unreachable(): never {
     throw new Error(`Internal error`);
 }
 
-export function canHaveChildren(value: unknown): value is object {
+type HasChildren = { [key in PropertyKey]: unknown };
+export function canHaveChildren(value: unknown): value is HasChildren | HasChildren&Function {
     return typeof value === "object" && value !== null || typeof value === "function";
 }

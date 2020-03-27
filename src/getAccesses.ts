@@ -1,9 +1,11 @@
 import { EyeMark, EyeType, EyePath } from "./eye";
 import { watchAccesses, getReads } from "./accessEvents";
 import { insertIntoListMapped, compareString, isEmpty, binarySearchMapped } from "./algorithms";
-import { getParentHash } from "./path";
+import { getParentHash, rootPath, pathFromArray, p2 } from "./path";
 import { g } from "./misc";
+
 import { exposeDebugLookup } from "./debugUtils/exposeDebug";
+import { getPathQuery } from "./debugUtils/searcher";
 
 // NOTE: At the end of the day, this requires a code() callback, instead of "startWatch" and "endWatch" functions, simply
 //      for performance reasons. Keeping track of changes takes memory, and so we don't want to keep track of changes
@@ -21,7 +23,6 @@ import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 export type AccessState = {
     reads: { [pathHash: string]: EyeTypes.Path2 };
     keyReads: { [pathHash: string]: EyeTypes.Path2 };
-    writes: { [pathHash: string]: EyeTypes.Path2 };
 };
 
 /** Runs code, and returns the reads/writes. */
@@ -31,13 +32,14 @@ export function getAccesses(
     let accesses: AccessState = {
         reads: Object.create(null),
         keyReads: Object.create(null),
-        writes: Object.create(null),
     };
     getReads(code, {
         read(path) {
+            console.log(`Read`, path);
             accesses.reads[path.pathHash] = path;
         },
         readKeys(path) {
+            console.log(`Read keys`, path);
             accesses.keyReads[path.pathHash] = path;
         },
     });
@@ -48,6 +50,8 @@ export function getAccesses(
 // TODO: Expose (to some kind of debug utility) the information of which watcher is triggering which watcher (we know if we are an watcher,
 //  because it will be within a getAccesses call). Of course it may be from a raw location, in which case getting the location information
 //  (via new Error()) is more expensive, but we should support it in some way.
+
+
 type PathsWatched = {
     [pathHash: string]: {
         path: EyeTypes.Path2;
@@ -58,12 +62,13 @@ type PathsWatched = {
         };
     }
 };
+
+
 type WatcherPaths = {
     [eyeOutputPathHash: string]: {
         [pathHash: string]: true
     }
 };
-
 
 let pathsWatched: PathsWatched = Object.create(null);
 let keysPathsWatched: PathsWatched = Object.create(null);
@@ -71,10 +76,20 @@ let keysPathsWatched: PathsWatched = Object.create(null);
 let eyePathsWatched: WatcherPaths = Object.create(null);
 let keysEyePathsWatched: WatcherPaths = Object.create(null);
 
-exposeDebugLookup("eyePathsWatched", eyePathsWatched, x => eyePathsWatched = x);
 
-(g as any).eyePathsWatched = eyePathsWatched;
-(g as any).keysEyePathsWatched = keysEyePathsWatched;
+
+exposeDebugLookup("eyePathsWatched", eyePathsWatched, x => eyePathsWatched = x, [
+    { query: getPathQuery([{ query: "" }]), type: "lookup" },
+    { query: getPathQuery([{ query: "" }, { query: "" }]), type: "lookup", foreignKey: { lookupName: "pathsWatched", useObjectKey: true } },
+]);
+exposeDebugLookup("pathsWatched", pathsWatched, x => pathsWatched = x, [
+    { query: getPathQuery([{ query: "" }]), hideColumn: true },
+    { query: getPathQuery([{ query: "" }, "path"]), formatValue: ((value: EyeTypes.Path2) => value.path) as any },
+    //{ query: rootPath },
+    //{ query: p2("path"), formatValue: ((value: EyeTypes.Path2) => value.path.join(".")) as any },
+    //{ query: p2("callbacks"), type: "lookup" },
+    //{ path: pathFromArray(["callbacks", PathWildCardKey]), formatValue: (value) => String(value).slice(0, 100) },
+]);
 
 function trigger(pathHash: string, pathsWatched: PathsWatched) {
     let callbacksObj = pathsWatched[pathHash];
