@@ -1,7 +1,7 @@
 import * as preact from "preact";
 import { eye, EyeRawValue, EyeLevel, eye0_pure } from "./eye";
 import { getAccesses } from "./getAccesses";
-import { derivedRaw, derived } from "./watcher";
+import { derivedRaw, derived } from "./derived";
 import { g } from "./misc";
 import { launchDebugUtils } from "./debugUtils/exposeDebug";
 

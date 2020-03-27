@@ -2,8 +2,8 @@ import * as preact from "preact";
 
 import { getAccesses } from "../getAccesses";
 import { g, UnionUndefined } from "../misc";
-import { eye0_pure, EyeLevel, GetLastKeyCountBoundsSymbol, EyeRawValue, EyeType } from "../eye";
-import { derivedRaw, derived } from "../watcher";
+import { eye0_pure, EyeLevel, GetLastKeyCountBoundsSymbol, EyeRawValue, EyeType, eye, eye3_replace, eye2_tree } from "../eye";
+import { derivedRaw, derived } from "../derived";
 import { exposedLookups, ExposedLookup, exposedLookupsDisplayInfo, DisplayInfo, reduceDisplayInfos } from "./exposeDebug";
 
 import "./debugUtilsMain.css";
@@ -11,8 +11,8 @@ import { getRootKey, getChildPath, rootPath, pathFromArray, joinPathHashes, defi
 import { canHaveChildren } from "../algorithms";
 import { getPathQuery, SearchCol, searchCol, createSearchCollection, insertIntoCol, pathToQueryPath } from "./searcher";
 import { PathQuery, QueryObject, getMatchQuery } from "./highlighter";
-import { TablePath, queryResult, queries, getTablePathHash } from "./lookupIndexer";
-import { getCellDisplayInfo, getColumnsFromDisplayInfos } from "./displayInfoIndexer";
+//import { TablePath, queryResult, queries, getTablePathHash } from "./lookupIndexer";
+//import { getCellDisplayInfo, getColumnsFromDisplayInfos } from "./displayInfoIndexer";
 
 
 
@@ -32,9 +32,25 @@ import { getCellDisplayInfo, getColumnsFromDisplayInfos } from "./displayInfoInd
 //      - Find write history
 //      - Find code that writes to it
 
-// todonext;
+//todonext;
 // Making it like a database was a mistake. We should just write every table from scratch, and if we want to do
 //  filtering we can add then on afterwards, at the render level of the table.
+//  Yeah... because there is some massive leak right now, which I want to be able to debug, but I can't
+//  without the debugger! So... I should at least make the first debugger simple...
+// So... just make a generic "Table" class, which takes a { [key: string]: value }[]
+interface TableData {
+    name: string;
+    columns: {
+        name: string;
+        // TODO: Any formatting information for that values (that we can't infer) should be placed in here.
+    }[];
+    rows: {
+        [column: string]: unknown;
+    }[];
+}
+
+exposedLookups;
+exposedLookupsDisplayInfo;
 
 
 
@@ -53,165 +69,71 @@ function logValue(value: unknown) {
 }
 
 class DebugArr extends preact.Component<{ arr: PropertyKey[] }, {}> {
-    public render() {
+    public render = derivedRaw(function(this: DebugArr) {
         let { arr } = this.props;
         return (
             <div className="Debug-pathValueHolder">
                 {arr.map(x => <div className="Debug-pathValue">{String(x)}</div>)}
             </div>
         )
-    }
+    }, { niceName: "DebugArr.render", thisContextEyeLevel: EyeLevel.eye3_replace });
 }
 
 class DebugRow extends preact.Component<{
-    row: unknown;
-    rowTablePath: TablePath;
-    rowKey: PropertyKey | QueryObject;
-    columns: PropertyKey[];
-    rowDisplayInfo: DisplayInfo|undefined;
+    columns: TableData["columns"];
+    row: TableData["rows"][0];
 }, {}> {
-    public render() {
 
-        let { row, rowTablePath, columns, rowKey, rowDisplayInfo } = this.props;
-
-        let keyCell = (
-            <td onClick={() => logValue(row)}>
-                <DebugArr arr={rowTablePath.map(x => typeof x === "object" ? x.query : x)} />
-            </td>
-        );
-        if(rowDisplayInfo?.hideColumn) {
-            keyCell = <preact.Fragment />;
-        }
-
-        if(rowDisplayInfo && rowDisplayInfo.type === "lookup") {
-            return (
-                <tr>
-                    {keyCell}
-                    <td>[LOOKUP]({Object.keys(row as any).length})</td>
-                </tr>
-            );
-        }
-
-        if(!canHaveChildren(row)) {
-            return (
-                <tr>
-                    {keyCell}
-                    <td>{String(row)}</td>
-                </tr>
-            );
-        }
-        let rowTyped = row;
-
-        let extraKeys: { [key: string]: true } = Object.create(null);
-        for(let key in row) {
-            let displayInfo = getCellDisplayInfo(rowTablePath.concat(key));
-            if(displayInfo && displayInfo.hideColumn) continue;
-            extraKeys[key] = true;
-        }
-        for(let column of columns) {
-            delete extraKeys[String(column)];
-        }
+    public render = derivedRaw(function(this: DebugRow) {
+        let { row, columns } = this.props;
 
         return (
             <tr>
-                {keyCell}
                 {columns.map(column => {
-                    let value = rowTyped[column as string];
-                    let displayInfo = getCellDisplayInfo(rowTablePath.concat(column));
-                    if(displayInfo) {
-                        if(displayInfo.generatedValue) {
-                            value = displayInfo.generatedValue(rowTyped);
-                        }
-                        if(displayInfo.formatValue) {
-                            value = displayInfo.formatValue(value);
-                        }
-                        if(displayInfo.type === "object") {
-                            value = "[Object]";
-                        }
-                        if(displayInfo.type === "lookup") {
-                            value = `[Lookup]`;
-                        }
-                    }
+                    let value = row[column.name];
                     return (
                         <td onClick={() => logValue(value)}>
-                            {Array.isArray(value) ? <DebugArr arr={value} /> : String(value)}
+                            {
+                                Array.isArray(value) ? <DebugArr arr={value} /> :
+                                typeof value === "object" ? "[object]" :
+                                String(value)
+                            }
                         </td>
                     );
                 })}
-                <td>
-                    <DebugArr arr={Object.keys(extraKeys)} />
-                </td>
             </tr>
         );
-    }
+    }, { niceName: "DebugRow.render", thisContextEyeLevel: EyeLevel.eye3_replace });
 }
 
 
 class TableComponent extends preact.Component<{
-    tablePath: TablePath;
+    data: TableData;
 }, {}> {
-    private renderTable() {
-        let { tablePath } = this.props;
+    //props: { data: TableData } = eye0_pure(Object.create(null)) as any;
 
-        let result = UnionUndefined(queryResult[getTablePathHash(tablePath)]);
-
-        if(!result) {
-            return { jsx: <div>Table results not indexed</div>, count: undefined };
-        }
-
-        let { rows } = result;
-
-        // TODO: Add a filter to the UI, and properly show highlighting
-        let filteredRows = searchCol(rows, getPathQuery({ query: "" }));
-
-        if(filteredRows.length === 0) {
-            return { jsx: <div>No results</div>, count: undefined };
-        }
-
-        // We assume there aren't specific display infos per row... because that would mean a collection is
-        //  not homeogeneous, which we don't support.
-        let rowTablePath = filteredRows[0].elem.rowTablePath;
-
-        // rowTablePath, so we get the resolved values.
-        let columns = getColumnsFromDisplayInfos(rowTablePath.slice(0, -1));
-        let rowDisplayInfo = getCellDisplayInfo(rowTablePath);
-
-        return {
-            count: filteredRows.length,
-            jsx: (
+    public render = derivedRaw(function(this: TableComponent) {
+        let { name, columns, rows } = this.props.data;
+        return (
+            <div>
+                <h2>{name} ({rows.length})</h2>
                 <table>
                     <thead>
                         <tr>
-                            {!rowDisplayInfo?.hideColumn && <th>Key</th>}
-                            {columns.map(column => <th>{column}</th>)}
-                            <th>Extra Keys</th>
+                            {columns.map(column => <th>{column.name}</th>)}
                         </tr>
                     </thead>
                     <tbody>
-                        {filteredRows.map(filteredRow => {
+                        {rows.map(row => {
                             return (
                                 <DebugRow
-                                    row={filteredRow.elem.row}
-                                    rowTablePath={filteredRow.elem.rowTablePath}
-                                    rowDisplayInfo={rowDisplayInfo}
-                                    rowKey={filteredRow.elem.rowTablePath[filteredRow.elem.rowTablePath.length - 1]}
+                                    row={row}
                                     columns={columns}
                                 />
                             );
                         })}
                     </tbody>
                 </table>
-            )
-        };
-    }
-
-    public render = derivedRaw(function(this: TableComponent) {
-        let { tablePath } = this.props;
-        let { jsx, count } = this.renderTable();
-        return (
-            <div>
-                <h2>{JSON.stringify(tablePath)}{count !== undefined ? ` (${count})` : undefined}</h2>
-                {jsx}
             </div>
         );
     }, { niceName: "TableComponent.render", thisContextEyeLevel: EyeLevel.eye3_replace });
@@ -220,14 +142,9 @@ class TableComponent extends preact.Component<{
 export class DebugUtils extends preact.Component<{}, {}> {
 
     data: {
-        queries: {
-            /** Need to be the hash, as we store and load this from the disk. */
-            queryHash: string;
-        }[]
+        
     } = {
-        queries: [
-            { queryHash: getPathQuery(["eyePathsWatched", { query: "render" }]).pathHash }
-        ]
+        
     };
 
     localStorageName = window.name + "_data2";
@@ -235,7 +152,7 @@ export class DebugUtils extends preact.Component<{}, {}> {
         let debugUtilsData = localStorage.getItem(this.localStorageName);
         if(debugUtilsData) {
             try {
-                //this.data = JSON.parse(debugUtilsData);
+                this.data = JSON.parse(debugUtilsData);
             } catch(e) {
                 console.log(`Error loading debugUtilsData from localStorage`);
             }
@@ -250,26 +167,44 @@ export class DebugUtils extends preact.Component<{}, {}> {
             let dataJSON = JSON.stringify(this.data);
             localStorage.setItem(this.localStorageName, dataJSON);
         }, "dataToLocalStorage");
-
-        derived(() => {
-            // TODO: Support removing exposedLookups with a delta watch. This allows us to change pages
-            //  without having to refresh the debugger (and is just more correct in general).
-            for(let query of this.data.queries) {
-                let path = getPathFromHash(query.queryHash);
-                let tablePath = pathToQueryPath(path);
-                if(!Array.isArray(tablePath)) {
-                    throw new Error(`Root table queries must have a path.`);
-                }
-                queries[path.pathHash] = tablePath;
-            }
-        }, "data.queries to queries");
     }
 
 
     public render = derivedRaw(function(this: DebugUtils) {
         return (
             <div>
-                {Object.values(queries).map(tablePath => <TableComponent tablePath={tablePath} />)}
+                {Object.keys(exposedLookups).sort().map(lookupName => {
+                    if(lookupName === "eyePathsWatched") {
+                        let lookup = exposedLookups[lookupName];
+                        let data: TableData = {
+                            name: lookupName,
+                            rows: Object.keys(lookup).map(key => ({ key, watchCount: Object.keys(lookup[key]).length })),
+                            columns: [{name: "key"}, {name: "watchCount"}],
+                        };
+                        return <TableComponent data={data} />;
+                    }
+                    if(lookupName === "pathsWatched") {
+                        let lookup = exposedLookups[lookupName];
+                        let data: TableData = {
+                            name: lookupName,
+                            rows: Object.keys(lookup).map(key => ({ path: (lookup[key] as any).path.path })),
+                            columns: [{name: "path"}],
+                        };
+                        return <TableComponent data={data} />;
+                    }
+
+                    let lookup = exposedLookups[lookupName];
+                    let rows: TableData["rows"] = Object.keys(lookup).map(x => ({
+                        key: x,
+                        ... lookup[x]
+                    }));
+                    let data: TableData = {
+                        name: lookupName,
+                        rows,
+                        columns: rows.length > 0 ? Object.keys(rows[0]).map(x => ({ name: x })) : [],
+                    };
+                    return <TableComponent data={data} />;
+                })}
             </div>
         );
     }, { niceName: "DebugUtils.render", thisContextEyeLevel: EyeLevel.eye3_replace });

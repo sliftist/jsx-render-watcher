@@ -3,6 +3,8 @@ import { eye, Eye1_root, EyeType, eye1_root, eye0_pure, EyeLevel, EyePath, GetUn
 import { getAccesses, watchPaths, AccessState, unwatchPaths } from "./getAccesses";
 import { canHaveChildren } from "./algorithms";
 import { getRootKey, pathFromArray } from "./path";
+import { exposeDebugLookup } from "./debugUtils/exposeDebug";
+import { getPathQuery } from "./debugUtils/searcher";
 
 export const BoxedValueSymbol = Symbol("BoxedValueSymbol");
 export const DisposeSymbol = Symbol("DisposeSymbol");
@@ -67,6 +69,26 @@ export function derived<T extends unknown>(
     return outputEye as T;
 }
 
+
+let derivedTriggerDiag: {
+    [pathHash: string]: {
+        count: number;
+        duration: number;
+        keyReads: number;
+        reads: number;
+    }
+} = Object.create(null);
+
+exposeDebugLookup("derivedTriggerDiag", derivedTriggerDiag, x => derivedTriggerDiag = x, [
+    { query: getPathQuery([{ query: "" }, "count"]), },
+    //{ query: getPathQuery([{ query: "" }]), hideColumn: true },
+    //{ query: getPathQuery([{ query: "" }, "path"]), formatValue: ((value: EyeTypes.Path2) => value.path) as any },
+    //{ query: rootPath },
+    //{ query: p2("path"), formatValue: ((value: EyeTypes.Path2) => value.path.join(".")) as any },
+    //{ query: p2("callbacks"), type: "lookup" },
+    //{ path: pathFromArray(["callbacks", PathWildCardKey]), formatValue: (value) => String(value).slice(0, 100) },
+]);
+
 export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
     fnc: (this: This) => T,
     config: {
@@ -105,6 +127,7 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
             if(pendingChange) return;
             pendingChange = true;
             let name = (this as any).name || this.constructor.name;
+
             //debugger;
             console.info(`Schedule triggering of derived ${name}`);
             Promise.resolve().then(() => {
@@ -119,13 +142,29 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
             thisContext = eye(this, thisContextEyeLevel);
         }
 
-        let output!: ReturnType<typeof fnc>;
-        let accesses = getAccesses(
-            () => {
-                output = fnc.apply(thisContext);
-            }
-        );
-        watchPaths(accesses, onChanged, pathTyped.pathHash);
-        return output;
+        if(!derivedTriggerDiag[pathTyped.pathHash]) {
+            derivedTriggerDiag[pathTyped.pathHash] = { count: 0, duration: 0, keyReads: 0, reads: 0 };
+        }
+        derivedTriggerDiag[pathTyped.pathHash].count++;
+
+        let time = Date.now();
+        try {
+
+            let output!: ReturnType<typeof fnc>;
+            let accesses = getAccesses(
+                () => {
+                    output = fnc.apply(thisContext);
+                }
+            );
+            watchPaths(accesses, onChanged, pathTyped.pathHash);
+            
+            derivedTriggerDiag[pathTyped.pathHash].keyReads += Object.keys(accesses.keyReads).length;
+            derivedTriggerDiag[pathTyped.pathHash].reads += Object.keys(accesses.reads).length;
+
+            return output;
+        } finally {
+            time = Date.now() - time;
+            derivedTriggerDiag[pathTyped.pathHash].duration += time;
+        }
     }
 }

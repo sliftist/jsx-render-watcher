@@ -241,9 +241,21 @@ function eyeInternal<T extends object>(
             // Eye0_pure is not put in state, so we don't need to check for it
         }
 
+        if(prop in childEyes) {
+            existingEye = childEyes[prop];
+        }
+
+        if(existingEye && existingEye[EyeRawValue] !== unwrapEye(rawValue)) {
+            // If the eye exists, but doesn't match the underlying object, then the object has changed
+            //  and so we need to create a new eye (as reads on the old eye should only change if the old
+            //  object has changed).
+            //  - This only happens if someone changed the object outside of an eye.
+            existingEye = undefined;
+        }
+
         // If the underlying eye is replaced from under us, then update the eye we use.
         //  (Could definitely happen if our state is accessed outside of an eye, which is supported).
-        if(!(prop in childEyes) || existingEye && childEyes[prop] !== existingEye) {
+        if(!existingEye || existingEye && childEyes[prop] !== existingEye) {
             let childEye = existingEye || eyeInternal(rawValue, childPath, childLevel);
             childEyes[prop] = childEye;
         }
