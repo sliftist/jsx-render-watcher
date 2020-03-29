@@ -12,39 +12,12 @@ import { getPathQuery } from "./debugUtils/searcher";
 //      indefinitely. If we exposed a "startWatch" function and the "endWatch" wasn't called, we would have to keep track of
 //      changes in perpetuity, which will explicitly be a memory leak.
 
-// TODO: getAccesses should support delta based behavior.
-//  1) The `code` function should be able to cache the previous output, and take instructions from code (via a
-//      register call) that certain children read/writes should be kept mostly the same, with only specific modification
-//      (add/remove).
-//  2) getAccesses should support outputting this delta based information directly, indicating children are unchanged,
-//      except for specific add/removes.
-//  - The output can stay mostly the same, except both reads and writes will have added/removed properties.
 
 export type AccessState = {
-    reads: { [pathHash: string]: EyeTypes.Path2 };
-    keyReads: { [pathHash: string]: EyeTypes.Path2 };
+    reads: Map<string, { path: EyeTypes.Path2 }>;
+    keyReads: Map<string, { path: EyeTypes.Path2 }>;
 };
 
-/** Runs code, and returns the reads/writes. */
-export function getAccesses(
-    code: () => void
-): DeepReadonly<AccessState> {
-    let accesses: AccessState = {
-        reads: Object.create(null),
-        keyReads: Object.create(null),
-    };
-    getReads(code, {
-        read(path) {
-            console.log(`Read`, path);
-            accesses.reads[path.pathHash] = path;
-        },
-        readKeys(path) {
-            console.log(`Read keys`, path);
-            accesses.keyReads[path.pathHash] = path;
-        },
-    });
-    return accesses;
-}
 
 
 // TODO: Expose (to some kind of debug utility) the information of which watcher is triggering which watcher (we know if we are an watcher,
@@ -120,7 +93,7 @@ export function unwatchPaths(accessId: string) {
  *      Will replace any existing callbacks on eyeOutput. If paths is empty, just removes all callbacks.
 */
 export function watchPaths(
-    pathsObj: Omit<AccessState, "writes">,
+    pathsObj: AccessState,
     callback: (path: EyeTypes.Path2) => void,
     accessId: string,
 ): void {
@@ -129,22 +102,74 @@ export function watchPaths(
     subscribe(pathsObj.reads, pathsWatched, eyePathsWatched);
     subscribe(pathsObj.keyReads, keysPathsWatched, keysEyePathsWatched);
 
-    function subscribe(paths: AccessState["keyReads"]|AccessState["reads"], pathsWatched: PathsWatched, eyePathsWatched: WatcherPaths) {
+    function subscribe(
+        paths: AccessState["keyReads"]|AccessState["reads"],
+        pathsWatched: PathsWatched,
+        eyePathsWatched: WatcherPaths
+    ) {
         eyePathsWatched[pathHash] = eyePathsWatched[pathHash] || Object.create(null);
         let prevPaths = eyePathsWatched[pathHash];
 
         // Add paths that are watched
-        for(let key in paths) {
-            let path = paths[key];
-            pathsWatched[path.pathHash] = pathsWatched[path.pathHash] || { path, callbacks: Object.create(null) };
-            pathsWatched[path.pathHash].callbacks[pathHash] = { callback };
-            prevPaths[key] = true;
+        for(let [pathHash, path] of paths) {
+            pathsWatched[pathHash] = pathsWatched[pathHash] || { path, callbacks: Object.create(null) };
+            pathsWatched[pathHash].callbacks[pathHash] = { callback };
+            prevPaths[pathHash] = true;
         }
 
         // Remove paths that are no longer watched
         for(let pathHash of Object.keys(prevPaths)) {
-            if(pathHash in paths) continue;
+            if(paths.has(pathHash)) continue;
             if(!pathsWatched[pathHash]) continue;
+            delete pathsWatched[pathHash].callbacks[pathHash];
+            if(isEmpty(pathsWatched[pathHash].callbacks)) {
+                delete pathsWatched[pathHash]
+            }
+            delete prevPaths[pathHash];
+        }
+    }
+}
+
+/*
+reads: { [pathHash: string]: EyeTypes.Path2 };
+keyReads: { [pathHash: string]: EyeTypes.Path2 };
+*/
+
+export interface PathDelta {
+    added: Map<string, { path: EyeTypes.Path2 }>;
+    removed: Map<string, { path: EyeTypes.Path2 }>;
+}
+
+export function watchPathsDelta(
+    pathsDelta: {
+        reads: PathDelta;
+        keyReads: PathDelta;
+    },
+    callback: (path: EyeTypes.Path2) => void,
+    accessId: string,
+): void {
+    let pathHash = accessId;
+
+    subscribe(pathsDelta.reads, pathsWatched, eyePathsWatched);
+    subscribe(pathsDelta.keyReads, keysPathsWatched, keysEyePathsWatched);
+
+    function subscribe(
+        paths: PathDelta,
+        pathsWatched: PathsWatched,
+        eyePathsWatched: WatcherPaths
+    ) {
+        eyePathsWatched[pathHash] = eyePathsWatched[pathHash] || Object.create(null);
+        let prevPaths = eyePathsWatched[pathHash];
+
+        // Add paths that are watched
+        for(let [pathHash, path] of paths.added) {
+            pathsWatched[pathHash] = pathsWatched[pathHash] || { path, callbacks: Object.create(null) };
+            pathsWatched[pathHash].callbacks[pathHash] = { callback };
+            prevPaths[pathHash] = true;
+        }
+
+        // Remove paths that are no longer watched
+        for(let [pathHash] of paths.removed) {
             delete pathsWatched[pathHash].callbacks[pathHash];
             if(isEmpty(pathsWatched[pathHash].callbacks)) {
                 delete pathsWatched[pathHash]

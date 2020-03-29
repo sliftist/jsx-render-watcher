@@ -2,6 +2,7 @@ import { registerReadAccess, registerWrite, registerKeysReadAccess, registerOwnK
 import { getRootKey, getChildPath, getParentPath } from "./path";
 import { unreachable, canHaveChildren } from "./algorithms";
 import { g } from "./misc";
+import { DeltaState, lookupDelta, DeltaContext, DeltaStateId, DeltaChanges } from "./delta";
 
 /** Returned from eyes, to indicate what they are. */
 export const EyeMark = Symbol("EyeMark");
@@ -112,6 +113,59 @@ function unwrapEye(value: unknown) {
     return value;
 }
 
+// NOTE: We only store the values temporarily, still allowing the underlying state to store the real values. This means
+//  that we don't cause a memory leak by permanently storing previous values. However, it also means that if the underlying
+//  raw values change, we may give the incorrect previous state. However... in this case we are also likely to simply miss
+//  changes, so there is no real solution to unproxied accesses.
+interface EyeDeltaState extends DeltaState {
+    curChanges: DeltaChanges<unknown>|undefined;
+    pendingChanges: DeltaChanges<unknown>;
+}
+function eyeDeltaStateConstructor(lookup: { [key: string]: unknown }): EyeDeltaState {
+    let state: EyeDeltaState = {
+        curChanges: undefined,
+        pendingChanges: new Map(),
+    };
+    for(let key in lookup) {
+        addChange(key, undefined, lookup[key], state.pendingChanges);
+    }
+    return state;
+}
+function createId() {
+    let deltaId: DeltaStateId<EyeDeltaState> = {
+        startRun(state) {
+            if(state.curChanges) throw new Error(`Internal error, startRun called before finishRun called`);
+            state.curChanges = state.pendingChanges;
+            // All the changes that happen after a run starts, until the next run starts, should be queued for the next
+            //  run. It must be done in startRun and not finishRun in case a run modifies it's own state, and therefore has to rerun.
+            state.pendingChanges = new Map();
+        },
+        finishRun(state) {
+            state.curChanges = undefined;
+        }
+    }
+    return deltaId;
+}
+/** Should be called if the value changes, OR if it is added, OR if it is deleted */
+function onKeyChange(key: string, prevValue: unknown, newValue: unknown, id: DeltaStateId<EyeDeltaState>) {
+    let states = DeltaContext.GetAllStates(id);
+    for(let state of states) {
+        if(state.curChanges) {
+            addChange(key, prevValue, newValue, state.curChanges);
+        }
+        addChange(key, prevValue, newValue, state.pendingChanges);
+    }
+}
+function addChange(key: string, prevValue: unknown, newValue: unknown, delta: DeltaChanges<unknown>) {
+    let prevDelta = delta.get(key);
+    if(!prevDelta) {
+        delta.set(key, { prevValue, newValue });
+    } else {
+        // Keep the old previous value, as previous is in reference to the previous run, not the previous set.
+        prevDelta.newValue = newValue;
+    }
+}
+
 function eyeInternal<T extends object>(
     initialState: T,
     path: EyeTypes.Path2,
@@ -159,6 +213,8 @@ function eyeInternal<T extends object>(
             (initialState as any)[WrappedInEye] = true;
         }
     }
+
+    let deltaId = createId();
 
     return eye;
 
@@ -274,6 +330,10 @@ function eyeInternal<T extends object>(
         let prop = propBadType as keyof T;
 
         let oldValue = initialState[prop];
+
+        if(typeof propBadType !== "symbol") {
+            onKeyChange(String(propBadType), oldValue, newValue, deltaId);
+        }
 
         // If it hasn't been accessed we don't fire the write. Because the path is always a path we created,
         //  and so if it hasn't been accesses, no one could possibly be watching for the read.
@@ -420,6 +480,14 @@ function eyeInternal<T extends object>(
                     // forEach
                 }
 
+                if(propBadType === lookupDelta) {
+                    let deltaContext = DeltaContext.GetCurrent();
+                    if(deltaContext) {
+                        let state = deltaContext.GetOrAddState(deltaId, () => eyeDeltaStateConstructor(eye));
+                        return () => ({ keysChanged: state.curChanges });
+                    }
+                }
+
                 let rawValue = Reflect.get(initialState, propBadType, receiver);
 
                 return onRead(propBadType, rawValue);
@@ -447,6 +515,7 @@ function eyeInternal<T extends object>(
                 if(propBadType === GetLastKeyCountBoundsSymbol) return true;
                 if(propBadType === EyeOnRead) return true;
                 if(propBadType === EyeOnWrite) return true;
+                if(propBadType === lookupDelta) return DeltaContext.GetCurrent() !== undefined;
 
                 onRead(propBadType, undefined);
                 return (Reflect.has as any)(...arguments);

@@ -1,17 +1,45 @@
-import { watchAccesses } from "./accessEvents";
+import { watchAccesses, getReads, ReadDelta, registerDeltaReadAccess, registerKeysReadAccess } from "./accessEvents";
 import { eye, Eye1_root, EyeType, eye1_root, eye0_pure, EyeLevel, EyePath, GetUniqueRootPath } from "./eye";
-import { getAccesses, watchPaths, AccessState, unwatchPaths } from "./getAccesses";
-import { canHaveChildren } from "./algorithms";
+import { watchPaths, AccessState, unwatchPaths, watchPathsDelta, PathDelta } from "./getAccesses";
+import { canHaveChildren, insertIntoListMapped } from "./algorithms";
 import { getRootKey, pathFromArray } from "./path";
 import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 import { getPathQuery } from "./debugUtils/searcher";
+import { DeltaContext } from "./delta";
 
 export const BoxedValueSymbol = Symbol("BoxedValueSymbol");
 export const DisposeSymbol = Symbol("DisposeSymbol");
 
 type ObserverThisContext = {
-    forceUpdate: () => void
+    forceUpdate: () => void;
+    // The order of these strings (< is sooner) determines the order at which forceUpdate is called...
+    //  undefined is last.
+    updateOrder?: string;
 };
+
+let scheduledCallbacks: {callback: () => void; order: string|undefined}[] | undefined = undefined;
+function scheduleCallback(callback: () => void, order: string|undefined) {
+    if(!scheduledCallbacks) {
+        scheduledCallbacks = [];
+        let callbacks = scheduledCallbacks;
+        Promise.resolve().then(() => {
+            scheduledCallbacks = undefined;
+            for(let callback of callbacks) {
+                callback.callback();
+            }
+        });
+    }
+    insertIntoListMapped(scheduledCallbacks, { callback, order }, a => a.order, (a, b) => {
+        if(a === undefined && b === undefined) return 0;
+        if(a === undefined) return +1;
+        if(b === undefined) return -1;
+        return (
+            a < b ? -1 :
+            a > b ? +1
+            : 0
+        );
+    });
+}
 
 
 // TODO: A check if where we do our Promise.resolve(), to see if it infinitely loops, and in which case...
@@ -29,11 +57,14 @@ export function derived<T extends unknown>(
         singleton: boolean
     }
 ): T {
+    // We notify our parents of important updates, because we return the result as an eye. If the parent doesn't
+    //  utilize the output eye (or parts of it), then it doesn't need to know when we change, which is fine.
+
     let outputEye = eye0_pure({} as { [key in PropertyKey]: unknown }, niceName, config);
 
     let run!: typeof runRaw; 
     function runRaw(this: typeof context) {
-        return fnc();
+        return fnc.call(this);
     }
     let context = {
         name: niceName || fnc.name,
@@ -70,12 +101,13 @@ export function derived<T extends unknown>(
 }
 
 
-let derivedTriggerDiag: {
+export let derivedTriggerDiag: {
     [pathHash: string]: {
         count: number;
         duration: number;
         keyReads: number;
-        reads: number;
+        watchedReads: number;
+        lastWatchedReads: number;
     }
 } = Object.create(null);
 
@@ -108,6 +140,28 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
     let disposed = false;
     let pendingChange = false;
 
+    // Not the full accesses, just the non-delta accesses
+    let curAccesses: AccessState = {
+        reads: new Map(),
+        keyReads: new Map(),
+    };
+    // Just the delta accesses
+    let curDeltaAccesses: Map<ReadDelta["fullReads"], ReadDelta> = new Map();
+    //  All of the counts of all the accesses.
+    let accessCounts: {
+        reads: Map<string, { path: EyeTypes.Path2; count: number }>;
+        keyReads: Map<string, { path: EyeTypes.Path2; count: number }>;
+    } = {
+        reads: new Map(),
+        keyReads: new Map(),
+    };
+
+    let thisContext: This;
+    function callFnc() {
+        return fnc.apply(thisContext);
+    }
+    let deltaContext = new DeltaContext(callFnc);
+
     return Object.assign(wrapper, {
         // todonext: call this in the componentDidUnmount call, from the decorator
         // TODO: It seems like if there is ever a reason to use Proxy.revocable, this is it.
@@ -128,40 +182,182 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
             pendingChange = true;
             let name = (this as any).name || this.constructor.name;
 
-            //debugger;
+            
             console.info(`Schedule triggering of derived ${name}`);
-            Promise.resolve().then(() => {
+            scheduleCallback(() => {
                 console.info(`Inside triggering of derived ${name}`);
                 pendingChange = false;
                 this.forceUpdate();
-            });
+            }, path.pathHash);
         };
 
-        let thisContext = this;
+        thisContext = this;
         if(thisContextEyeLevel !== undefined && canHaveChildren(this)) {
             thisContext = eye(this, thisContextEyeLevel);
         }
 
         if(!derivedTriggerDiag[pathTyped.pathHash]) {
-            derivedTriggerDiag[pathTyped.pathHash] = { count: 0, duration: 0, keyReads: 0, reads: 0 };
+            derivedTriggerDiag[pathTyped.pathHash] = { count: 0, duration: 0, keyReads: 0, watchedReads: 0, lastWatchedReads: 0 };
         }
         derivedTriggerDiag[pathTyped.pathHash].count++;
 
         let time = Date.now();
         try {
+            // TODO: If we write to a path before we read from it, we should suppress the read,
+            //  as writing to it means the read is from ourself (and so won't change if we rerun).
+
+            let nextAccesses: AccessState = {
+                reads: new Map(),
+                keyReads: new Map(),
+            };
+            let nextDeltaAccesses: Map<ReadDelta["fullReads"], ReadDelta> = new Map();
 
             let output!: ReturnType<typeof fnc>;
-            let accesses = getAccesses(
-                () => {
-                    output = fnc.apply(thisContext);
-                }
+            output = getReads(
+                () => deltaContext.RunCode(),
+                {
+                    read(path) {
+                        nextAccesses.reads.set(path.pathHash, {path});
+                    },
+                    readKeys(path) {
+                        nextAccesses.keyReads.set(path.pathHash, {path});
+                    },
+                    //*
+                    readDelta(delta) {
+                        nextDeltaAccesses.set(delta.fullReads, delta);
+                    },
+                    //*/
+                },
+
+                // We call this.forceUpdate on change, so we do notify our parent of changes.
+                true
             );
-            watchPaths(accesses, onChanged, pathTyped.pathHash);
-            
-            derivedTriggerDiag[pathTyped.pathHash].keyReads += Object.keys(accesses.keyReads).length;
-            derivedTriggerDiag[pathTyped.pathHash].reads += Object.keys(accesses.reads).length;
+
+
+            // We leave count at 0, because the count may increase again later. These sets keep track
+            //  of the values we have to check for 0.
+            let removeReadCandidates: Set<string> = new Set();
+            let removeKeyReadCandidates: Set<string> = new Set();
+
+            let readsDelta: PathDelta = { added: new Map(), removed: new Map() };
+            let keyReadsDelta: PathDelta = { added: new Map(), removed: new Map() };
+
+            addAccesses(curAccesses.reads, nextAccesses.reads, readsDelta, accessCounts.reads, removeReadCandidates);
+            addAccesses(curAccesses.keyReads, nextAccesses.keyReads, keyReadsDelta, accessCounts.keyReads, removeKeyReadCandidates);
+
+            addDeltaAccesses(curDeltaAccesses, nextDeltaAccesses, readsDelta, accessCounts.reads, removeReadCandidates);
+            // NOTE: No delta accesses for key reads, we could have deltas for key reads, but it isn't necessary yet.
+
+            checkCandidates(readsDelta, accessCounts.reads, removeReadCandidates);
+            checkCandidates(keyReadsDelta, accessCounts.keyReads, removeKeyReadCandidates);
+
+
+            curAccesses = nextAccesses;
+            curDeltaAccesses = nextDeltaAccesses;
+
+            watchPathsDelta(
+                {
+                    reads: { added: readsDelta.added, removed: readsDelta.removed },
+                    keyReads: { added: keyReadsDelta.added, removed: keyReadsDelta.removed }
+                },
+                onChanged,
+                pathTyped.pathHash
+            );
+
+            let curReadsCount = nextAccesses.reads.size + Array.from(nextDeltaAccesses.values()).map(x => x.readsAdded.size).reduce((a, b) => a + b, 0);
+            let curKeyReadsCount = nextAccesses.keyReads.size;
+
+            derivedTriggerDiag[pathTyped.pathHash].watchedReads += curReadsCount;
+            derivedTriggerDiag[pathTyped.pathHash].keyReads += curKeyReadsCount;
+            derivedTriggerDiag[pathTyped.pathHash].lastWatchedReads = curReadsCount;
 
             return output;
+
+            function addKey(
+                path: EyeTypes.Path2,
+                deltas: PathDelta,
+                counts: Map<string, { path: EyeTypes.Path2; count: number }>
+            ) {
+                let key = path.pathHash;
+                deltas.added.set(key, {path});
+                let obj = counts.get(key);
+                if(!obj) {
+                    obj = { path, count: 0 };
+                    counts.set(key, obj);
+                }
+                obj.count++;
+            }
+            function removeKey(
+                path: EyeTypes.Path2,
+                counts: Map<string, { path: EyeTypes.Path2; count: number }>,
+                removeCandidates: Set<string>
+            ) {
+                let key = path.pathHash;
+                let obj = counts.get(key);
+                if(!obj) {
+                    throw new Error(`Internal error, no counts even though value was accessed before`);
+                }
+                obj.count--;
+                if(obj.count === 0) {
+                    removeCandidates.add(key);
+                }
+            }
+
+            function addAccesses(
+                cur: AccessState["reads"],
+                next: AccessState["reads"],
+                deltas: PathDelta,
+                counts: Map<string, { path: EyeTypes.Path2; count: number }>,
+                removeCandidates: Set<string>
+            ) {
+                for(let [key, path] of next) {
+                    if(!cur.has(key)) {
+                        addKey(path.path, deltas, counts);
+                    }
+                }
+                for(let [key, path] of cur) {
+                    if(!next.has(key)) {
+                        removeKey(path.path, counts, removeCandidates);
+                    }
+                }
+            }
+            function addDeltaAccesses(
+                cur: Map<ReadDelta["fullReads"], ReadDelta>,
+                next: Map<ReadDelta["fullReads"], ReadDelta>,
+                deltas: PathDelta,
+                counts: Map<string, { path: EyeTypes.Path2; count: number }>,
+                removeCandidates: Set<string>
+            ) {
+                for(let [key, delta] of next) {
+                    if(!cur.has(key)) {
+                        addAccesses(new Map(), delta.fullReads, deltas, counts, removeCandidates);
+                    } else {
+                        for(let [key, path] of delta.readsAdded) {
+                            addKey(path, deltas, counts);
+                        }
+                        for(let [key, path] of delta.readsRemoved) {
+                            removeKey(path, counts, removeCandidates);
+                        }
+                    }
+                }
+            }
+            
+            function checkCandidates(
+                deltas: PathDelta,
+                counts: Map<string, { path: EyeTypes.Path2; count: number }>,
+                removeCandidates: Set<string>
+            ) {
+                for(let key in removeCandidates) {
+                    let countObj = counts.get(key);
+                    if(countObj === undefined) {
+                        throw new Error(`Internal error, missing count`);
+                    }
+                    if(countObj.count === 0) {
+                        counts.delete(key);
+                        deltas.removed.set(key, countObj);
+                    }
+                }
+            }
         } finally {
             time = Date.now() - time;
             derivedTriggerDiag[pathTyped.pathHash].duration += time;

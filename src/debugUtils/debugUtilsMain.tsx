@@ -1,6 +1,5 @@
 import * as preact from "preact";
 
-import { getAccesses } from "../getAccesses";
 import { g, UnionUndefined } from "../misc";
 import { eye0_pure, EyeLevel, GetLastKeyCountBoundsSymbol, EyeRawValue, EyeType, eye, eye3_replace, eye2_tree } from "../eye";
 import { derivedRaw, derived } from "../derived";
@@ -51,7 +50,6 @@ interface TableData {
 
 exposedLookups;
 exposedLookupsDisplayInfo;
-
 
 
 
@@ -173,7 +171,8 @@ export class DebugUtils extends preact.Component<{}, {}> {
     public render = derivedRaw(function(this: DebugUtils) {
         return (
             <div>
-                {Object.keys(exposedLookups).sort().map(lookupName => {
+                {Object.keys(exposedLookups).map(lookupName => {
+                    if(lookupName === "pathsWatched") return false;
                     if(lookupName === "eyePathsWatched") {
                         let lookup = exposedLookups[lookupName];
                         let data: TableData = {

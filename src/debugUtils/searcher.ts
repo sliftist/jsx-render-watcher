@@ -3,7 +3,6 @@ import { PathQuery, getHighlight, KeyMatchHighlight, getMatchQuery } from "./hig
 import { rootPath, hashAfterLastPath, getHashAfterLastChild, pathFromArray, definePathSymbolName, expandChildPaths, getPathFromHash } from "../path";
 
 
-
 const uniqueSymbol = Symbol();
 
 
