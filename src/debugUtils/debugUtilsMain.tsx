@@ -1,13 +1,13 @@
 import * as preact from "preact";
 
-import { g, UnionUndefined } from "../misc";
+import { g, UnionUndefined } from "../lib/misc";
 import { eye0_pure, EyeLevel, GetLastKeyCountBoundsSymbol, EyeRawValue, EyeType, eye, eye3_replace, eye2_tree } from "../eye";
 import { derivedRaw, derived } from "../derived";
 import { exposedLookups, ExposedLookup, exposedLookupsDisplayInfo, DisplayInfo, reduceDisplayInfos } from "./exposeDebug";
 
 import "./debugUtilsMain.css";
-import { getRootKey, getChildPath, rootPath, pathFromArray, joinPathHashes, definePathSymbolName, getPathFromHash } from "../path";
-import { canHaveChildren } from "../algorithms";
+import { getRootKey, getChildPath, rootPath, pathFromArray, joinPathHashes, definePathSymbolName, getPathFromHash } from "../lib/path";
+import { canHaveChildren } from "../lib/algorithms";
 import { getPathQuery, SearchCol, searchCol, createSearchCollection, insertIntoCol, pathToQueryPath } from "./searcher";
 import { PathQuery, QueryObject, getMatchQuery } from "./highlighter";
 //import { TablePath, queryResult, queries, getTablePathHash } from "./lookupIndexer";

@@ -1,4 +1,4 @@
-import { g } from "../misc";
+import { g } from "../lib/misc";
 import { eye0_pure, EyePath } from "../eye";
 
 export type ExposedLookup = { [key in PropertyKey]: object };

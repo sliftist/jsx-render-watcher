@@ -1,6 +1,6 @@
-import { insertIntoList, binarySearchMapped, insertIntoListMapped, binarySearch } from "../algorithms";
+import { insertIntoList, binarySearchMapped, insertIntoListMapped, binarySearch } from "../lib/algorithms";
 import { PathQuery, getHighlight, KeyMatchHighlight, getMatchQuery } from "./highlighter";
-import { rootPath, hashAfterLastPath, getHashAfterLastChild, pathFromArray, definePathSymbolName, expandChildPaths, getPathFromHash } from "../path";
+import { rootPath, hashAfterLastPath, getHashAfterLastChild, pathFromArray, definePathSymbolName, expandChildPaths, getPathFromHash } from "../lib/path";
 
 
 const uniqueSymbol = Symbol();

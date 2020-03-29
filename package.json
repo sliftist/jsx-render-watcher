@@ -1,5 +1,15 @@
 {
   "name": "jsx-render-watcher",
+  "sideEffects": [
+    "*.css",
+    "*.less",
+    "*_g",
+    "*_g.ts",
+    "*_g.tsx",
+    "global.ts",
+    "*test.ts",
+    "*test.tsx"
+  ],
   "version": "0.0.1",
   "main": "index.js",
   "repository": "git@github.com:sliftist/jsx-render-watcher.git",
@@ -11,6 +21,7 @@
     "css-loader": "^3.4.2",
     "pchannel": "^1.0.0",
     "preact": "^10.3.4",
+    "preact-render-to-string": "^5.1.4",
     "react": "^16.13.1",
     "react-dom": "^16.13.1",
     "style-loader": "^1.1.3",

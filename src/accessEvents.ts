@@ -1,4 +1,4 @@
-import { UnionUndefined } from "./misc";
+import { UnionUndefined } from "./lib/misc";
 
 type WatchWriteCallbacks = {
     write: (path: EyeTypes.Path2) => void;

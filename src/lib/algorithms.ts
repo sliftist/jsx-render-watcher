@@ -84,3 +84,7 @@ type HasChildren = { [key in PropertyKey]: unknown };
 export function canHaveChildren(value: unknown): value is HasChildren | HasChildren&Function {
     return typeof value === "object" && value !== null || typeof value === "function";
 }
+
+export function sort<T>(arr: T[], sortKey: (obj: T) => number) {
+    arr.sort((a, b) => sortKey(a) - sortKey(b));
+}

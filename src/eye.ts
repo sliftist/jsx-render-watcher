@@ -1,8 +1,8 @@
 import { registerReadAccess, registerWrite, registerKeysReadAccess, registerOwnKeysWrite } from "./accessEvents";
-import { getRootKey, getChildPath, getParentPath } from "./path";
-import { unreachable, canHaveChildren } from "./algorithms";
-import { g } from "./misc";
-import { DeltaState, lookupDelta, DeltaContext, DeltaStateId, DeltaChanges } from "./delta";
+import { getRootKey, getChildPath, getParentPath } from "./lib/path";
+import { unreachable, canHaveChildren } from "./lib/algorithms";
+import { g } from "./lib/misc";
+import { DeltaState, arrayDelta, DeltaContext, DeltaStateId, KeyDeltaChanges } from "./delta";
 
 /** Returned from eyes, to indicate what they are. */
 export const EyeMark = Symbol("EyeMark");
@@ -118,8 +118,8 @@ function unwrapEye(value: unknown) {
 //  raw values change, we may give the incorrect previous state. However... in this case we are also likely to simply miss
 //  changes, so there is no real solution to unproxied accesses.
 interface EyeDeltaState extends DeltaState {
-    curChanges: DeltaChanges<unknown>|undefined;
-    pendingChanges: DeltaChanges<unknown>;
+    curChanges: KeyDeltaChanges<unknown>|undefined;
+    pendingChanges: KeyDeltaChanges<unknown>;
 }
 function eyeDeltaStateConstructor(lookup: { [key: string]: unknown }): EyeDeltaState {
     let state: EyeDeltaState = {
@@ -156,7 +156,7 @@ function onKeyChange(key: string, prevValue: unknown, newValue: unknown, id: Del
         addChange(key, prevValue, newValue, state.pendingChanges);
     }
 }
-function addChange(key: string, prevValue: unknown, newValue: unknown, delta: DeltaChanges<unknown>) {
+function addChange(key: string, prevValue: unknown, newValue: unknown, delta: KeyDeltaChanges<unknown>) {
     let prevDelta = delta.get(key);
     if(!prevDelta) {
         delta.set(key, { prevValue, newValue });
@@ -164,6 +164,125 @@ function addChange(key: string, prevValue: unknown, newValue: unknown, delta: De
         // Keep the old previous value, as previous is in reference to the previous run, not the previous set.
         prevDelta.newValue = newValue;
     }
+}
+
+function wrapMapFunctions(
+    state: Map<unknown, unknown>,
+    prop: string,
+    path: EyeTypes.Path2,
+    onRead: (propBadType: PropertyKey, rawValue: unknown) => unknown,
+    onWrite: (propBadType: PropertyKey, newValue: unknown, deleted: boolean) => void,
+) {
+    function validateMapKey(key: unknown): key is PropertyKey {
+        if(typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
+            return true;
+        } else {
+            // TODO: We can support this on the eye levels that allow object mutation, by adding our own key to the object in a symbol property.
+            throw new Error(`Wrapping Map that uses non primitive keys is not supported yet.`);
+        }
+    }
+    if(prop === "has") {
+        return function mapHas(this: Map<unknown, unknown>, key: unknown) {
+            if(!validateMapKey(key)) return;
+            onRead(key, undefined);
+            return state.has(key);
+        };
+    }
+    if(prop === "delete") {
+        return function mapDelete(this: Map<unknown, unknown>, key: unknown) {
+            if(!validateMapKey(key)) return;
+            onRead(key, undefined);
+            onWrite(key, undefined, true);
+            return state.delete(key);
+        };
+    }
+    if(prop === "get") {
+        return function mapGet(this: Map<unknown, unknown>, key: unknown) {
+            if(!validateMapKey(key)) return;
+            let result = state.get(key);
+            return onRead(key, result);
+        };
+    }
+    if(prop === "set") {
+        return function mapSet(this: Map<unknown, unknown>, key: unknown, value: unknown) {
+            if(!validateMapKey(key)) return;
+            state.set(key, value);
+            return eye;
+        };
+    }
+    if(prop === "entries") {
+        return function mapEntries(this: Map<unknown, unknown>) {
+            registerKeysReadAccess(path);
+            let results: unknown[] = [];
+            for(let [key, value] of state.entries()) {
+                if(!validateMapKey(key)) return;
+                value = onRead(key, value);
+                results.push([key, value]);
+            }
+            return results;
+        };
+    }
+    if(prop === "keys") {
+        return function mapKeys(this: Map<unknown, unknown>) {
+            registerKeysReadAccess(path);
+            let results: unknown[] = [];
+            for(let key of state.keys()) {
+                if(!validateMapKey(key)) return;
+                onRead(key, undefined);
+                results.push(key);
+            }
+            return results;
+        };
+    }
+    if(prop === "values") {
+        return function mapValues(this: Map<unknown, unknown>) {
+            registerKeysReadAccess(path);
+            let results: unknown[] = [];
+            for(let [key, value] of state.entries()) {
+                if(typeof key === "object") {
+                    throw new Error(`Non-primitive keys not supported in eye wrapped Maps yet`);
+                }
+                value = onRead(key as any, value);
+                results.push(value);
+            }
+            return results;
+        };
+    }
+    if(prop === "clear") {
+        return function mapValues(this: Map<unknown, unknown>) {
+            registerKeysReadAccess(path);
+            for(let key of state.keys()) {
+                if(typeof key === "object") {
+                    throw new Error(`Non-primitive keys not supported in eye wrapped Maps yet`);
+                }
+                onWrite(key as any, undefined, true);
+            }
+            state.clear();
+        };
+    }
+    // forEach
+    throw new Error(`Unhandled Map function, ${prop}`);
+}
+
+function wrapArrayFunctions(
+    state: unknown[],
+    prop: string,
+    path: EyeTypes.Path2,
+    onRead: (propBadType: PropertyKey, rawValue: unknown) => unknown,
+    onWrite: (propBadType: PropertyKey, newValue: unknown, deleted: boolean) => void,
+): Function|undefined {
+    // splice
+    // push
+    // pop
+    // unshift
+    // shift
+
+    // NOTE: copyWithin "does not mutate the length", and so it should work without wrapping
+    //  - fill is the same
+    //  - reverse is the same
+    //  - sort is the same
+
+    return undefined;
 }
 
 function eyeInternal<T extends object>(
@@ -232,6 +351,13 @@ function eyeInternal<T extends object>(
         //      or else we will trigger these now unrelated objects.
         let childPath = childPaths[prop] = childPaths[prop] || getChildPath(path, [prop, pathSeqNum++]);
         
+        if(Array.isArray(initialState)) {
+            // Accessing a key in an array implicitly depends on the keys of the array, as if children before us are spliced,
+            //  our index changes (or rather, the value at our current index changes). So all array accesses depend on the keys
+            //  of the entire array.
+            registerKeysReadAccess(path);
+        }
+
         registerReadAccess(childPath);
 
         let descriptor = Object.getOwnPropertyDescriptor(initialState, propBadType);
@@ -395,92 +521,17 @@ function eyeInternal<T extends object>(
                     console.log(`Read symbol ${String(propBadType)}`);
                 }
 
-                if(initialState instanceof Map) {
-                    function validateMapKey(key: unknown): key is PropertyKey {
-                        if(typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
-                            return true;
-                        } else {
-                            // TODO: We can support this on the eye levels that allow object mutation, by adding our own key to the object in a symbol property.
-                            throw new Error(`Wrapping Map that uses non primitive keys is not supported yet.`);
-                        }
+                if(typeof initialState === "object" && initialState instanceof Map && typeof propBadType === "string") {
+                    return wrapMapFunctions(initialState, propBadType, path, onRead, onWrite);
+                }
+                if(typeof initialState === "object" && Array.isArray(initialState) && typeof propBadType === "string") {
+                    let result = wrapArrayFunctions(initialState, propBadType, path, onRead, onWrite);
+                    if(result) {
+                        return result;
                     }
-                    if(propBadType === "has") {
-                        return function mapHas(this: Map<unknown, unknown>, key: unknown) {
-                            if(!validateMapKey(key)) return;
-                            onRead(key, undefined);
-                            return initialState.has(key);
-                        };
-                    }
-                    if(propBadType === "delete") {
-                        return function mapDelete(this: Map<unknown, unknown>, key: unknown) {
-                            if(!validateMapKey(key)) return;
-                            onRead(key, undefined);
-                            onWrite(key, undefined, true);
-                            return initialState.delete(key);
-                        };
-                    }
-                    if(propBadType === "get") {
-                        return function mapGet(this: Map<unknown, unknown>, key: unknown) {
-                            if(!validateMapKey(key)) return;
-                            let result = initialState.get(key);
-                            return onRead(key, result);
-                        };
-                    }
-                    if(propBadType === "set") {
-                        return function mapSet(this: Map<unknown, unknown>, key: unknown, value: unknown) {
-                            if(!validateMapKey(key)) return;
-                            initialState.set(key, value);
-                            return eye;
-                        };
-                    }
-                    if(propBadType === "entries") {
-                        return function mapEntries(this: Map<unknown, unknown>) {
-                            registerKeysReadAccess(path);
-                            let results: unknown[] = [];
-                            for(let [key, value] of initialState.entries()) {
-                                if(!validateMapKey(key)) return;
-                                value = onRead(key, value);
-                                results.push([key, value]);
-                            }
-                            return results;
-                        };
-                    }
-                    if(propBadType === "keys") {
-                        return function mapKeys(this: Map<unknown, unknown>) {
-                            registerKeysReadAccess(path);
-                            let results: unknown[] = [];
-                            for(let key of initialState.keys()) {
-                                if(!validateMapKey(key)) return;
-                                onRead(key, undefined);
-                                results.push(key);
-                            }
-                            return results;
-                        };
-                    }
-                    if(propBadType === "values") {
-                        return function mapValues(this: Map<unknown, unknown>) {
-                            registerKeysReadAccess(path);
-                            let results: unknown[] = [];
-                            for(let [key, value] of initialState.entries()) {
-                                value = onRead(key, value);
-                                results.push(value);
-                            }
-                            return results;
-                        };
-                    }
-                    if(propBadType === "clear") {
-                        return function mapValues(this: Map<unknown, unknown>) {
-                            registerKeysReadAccess(path);
-                            for(let key of initialState.keys()) {
-                                onWrite(key, undefined, true);
-                            }
-                            initialState.clear();
-                        };
-                    }
-                    // forEach
                 }
 
-                if(propBadType === lookupDelta) {
+                if(propBadType === arrayDelta) {
                     let deltaContext = DeltaContext.GetCurrent();
                     if(deltaContext) {
                         let state = deltaContext.GetOrAddState(deltaId, () => eyeDeltaStateConstructor(eye));
@@ -515,7 +566,7 @@ function eyeInternal<T extends object>(
                 if(propBadType === GetLastKeyCountBoundsSymbol) return true;
                 if(propBadType === EyeOnRead) return true;
                 if(propBadType === EyeOnWrite) return true;
-                if(propBadType === lookupDelta) return DeltaContext.GetCurrent() !== undefined;
+                if(propBadType === arrayDelta) return DeltaContext.GetCurrent() !== undefined;
 
                 onRead(propBadType, undefined);
                 return (Reflect.has as any)(...arguments);

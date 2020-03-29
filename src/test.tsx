@@ -1,13 +1,19 @@
 import * as preact from "preact";
+import * as React from "react";
 import { eye, EyeRawValue, EyeLevel, eye0_pure, GetUniqueRootPath, EyePath, EyeType } from "./eye";
 import { derivedRaw, derived, derivedTriggerDiag } from "./derived";
-import { g } from "./misc";
+import { g } from "./lib/misc";
 import { launchDebugUtils } from "./debugUtils/exposeDebug";
 import { DeltaContext, DeltaStateId, DeltaState, GetCurLookupDelta } from "./delta";
-import { getRootKey, getChildPath } from "./path";
+import { getRootKey, getChildPath } from "./lib/path";
 import { registerOwnKeysWrite, registerKeysReadAccess, registerReadAccess, registerWrite, registerDeltaReadAccess } from "./accessEvents";
 
 import { ThrowIfNotImplementsData } from "pchannel";
+
+import { render } from "preact-render-to-string";
+import { MountVanillaComponents } from "./mount2Vanilla";
+import { ComponentInstanceClass } from "./mount2";
+
 
 
 
@@ -438,7 +444,7 @@ export class TestMain extends preact.Component<{ y: number }, {}> {
         let eyeDerived = derived(function (this: any) {
             lastSumLoopCount = 0;
             let changes = GetCurLookupDelta(state);
-            for(let { prevValue, newValue } of changes.keysChanged.values()) {
+            for(let { prevValue, newValue } of changes.values()) {
                 lastSumLoopCount++;
                 lastSum -= prevValue || 0;
                 lastSum += newValue || 0;
@@ -468,6 +474,29 @@ export class TestMain extends preact.Component<{ y: number }, {}> {
 
 
         console.warn(`end eye test`);
+    }
+
+    {
+        let node = document.createElement("div");
+
+        MountVanillaComponents(
+            <div>test</div>,
+            node,
+            false
+        );
+
+        console.log(node.innerHTML);
+
+        //let y = <Test />;
+        //console.log(y);
+        //debugger;
+        //todonext;
+        // Now... we need to write our own dom mounter, that is somewhat delta aware (maybe not of GetCurLookupDelta,
+        //  but perhaps using something that only uses modifications to JSX, although... just using a symbol that returns
+        //  the delta... is probably fine. Although we would hardcode the delta in the JSX object? That way it doesn't
+        //  have to use DeltaContext?
+        //  - Or... we COULD use DeltaContext, idk, something like that.
+        // And also, we already wrote a dom mounter, so just take a lot of the code from that...
     }
 })();
 

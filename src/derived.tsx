@@ -1,8 +1,8 @@
 import { watchAccesses, getReads, ReadDelta, registerDeltaReadAccess, registerKeysReadAccess } from "./accessEvents";
 import { eye, Eye1_root, EyeType, eye1_root, eye0_pure, EyeLevel, EyePath, GetUniqueRootPath } from "./eye";
 import { watchPaths, AccessState, unwatchPaths, watchPathsDelta, PathDelta } from "./getAccesses";
-import { canHaveChildren, insertIntoListMapped } from "./algorithms";
-import { getRootKey, pathFromArray } from "./path";
+import { canHaveChildren, insertIntoListMapped } from "./lib/algorithms";
+import { getRootKey, pathFromArray } from "./lib/path";
 import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 import { getPathQuery } from "./debugUtils/searcher";
 import { DeltaContext } from "./delta";

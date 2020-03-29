@@ -1,8 +1,8 @@
 import { EyeMark, EyeType, EyePath } from "./eye";
 import { watchAccesses, getReads } from "./accessEvents";
-import { insertIntoListMapped, compareString, isEmpty, binarySearchMapped } from "./algorithms";
-import { getParentHash, rootPath, pathFromArray, p2 } from "./path";
-import { g } from "./misc";
+import { insertIntoListMapped, compareString, isEmpty, binarySearchMapped } from "./lib/algorithms";
+import { getParentHash, rootPath, pathFromArray, p2 } from "./lib/path";
+import { g } from "./lib/misc";
 
 import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 import { getPathQuery } from "./debugUtils/searcher";
