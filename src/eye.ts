@@ -11,6 +11,10 @@ export const UnEyeMark = Symbol("UnEyeMark");
 export const EyePath = Symbol("EyePath");
 export const EyeRawValue = Symbol("EyeRawValue");
 
+// TODO: NOW that we can use Maps, use Maps to make Eye1_root and Eye2_tree, etc, store
+//  eyes outside of the objects. That way we don't need to mess up objects with our symbols... probably ever?
+//  - Well... use a WeakMap
+
 export const Eye0_pure = Symbol("Eye0_pure");
 export const Eye1_root = Symbol("Eye1_root");
 export const Eye2_tree = Symbol("Eye2_tree");

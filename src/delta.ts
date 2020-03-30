@@ -144,11 +144,8 @@ export function GetCurArrayDelta<Value>(arr: Value[] & { [arrayDelta]?: () => Ar
     //  touching the longest sequence.
     {
         // Moves is already ascending by prevIndex, so the value should be newIndex
-        let { longestSequence, otherSequence } = LongestSequence(moves.map(x => x.newIndex));
+        let { otherSequence } = LongestSequence(moves.map(x => x.newIndex));
         let newMovesOrder: typeof moves = [];
-        for(let moveIndex of longestSequence) {
-            //newMovesOrder.push(moves[moveIndex]);
-        }
         for(let moveIndex of otherSequence) {
             newMovesOrder.push(moves[moveIndex]);
         }

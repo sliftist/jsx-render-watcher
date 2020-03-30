@@ -1,5 +1,5 @@
-import { Mount2, mountRerender, mount2Internal, mountContextSymbol, MountContext, ComponentInstance, ComponentInstanceState, componentInstanceStateSymbol, CreateComponent, ComponentInstanceClass, JSXNode } from "./mount2";
-import { insertIntoListMapped } from "./lib/algorithms";
+import { Mount2, mountRerender, mountContextSymbol, MountContext, ComponentInstance, ComponentInstanceState, componentInstanceStateSymbol, CreateComponent, ComponentInstanceClass, JSXNode } from "./mount2";
+import { insertIntoListMapped, binarySearchMapped, compareString } from "./lib/algorithms";
 
 
 type ClassInstance = ComponentInstance & {
@@ -16,43 +16,80 @@ export function MountVanillaComponents(
      */
     XSSComponentCheck: boolean
 ): void {
-    let context = rootElement[mountContextSymbol];
-    if(context) {
-        // TODO: Actually... maybe we should warn, or error? Because if we render twice to the same place, the rerenders will break each other.
-        return mount2Internal(rootElement as any, context as any, { rootJSX: virtualDom, treeNodes: {}, parentComponent: undefined }, XSSComponentCheck);
-    }
-
-    
-    let components: { [id: string]: {
-        instance: ClassInstance;
-    } } = {};
-
-    let updateQueue: ((ComponentInstance&ComponentInstanceState)[])|undefined = undefined;
-    function rootRunCode(code: () => void) {
-        updateQueue = [];
-        try {
-            code();
-    
-            while(updateQueue.length > 0) {
-                let component = updateQueue[0];
-                updateQueue.shift();
-                mountRerender(component, XSSComponentCheck);
-            }
-        }  catch(e) {
-            // Bad, it means we won't be properly running update queue
-            debugger;
-            throw e;
-        } finally {
-            updateQueue = undefined;
+    let componentIds = new Map<ComponentInstance, string>();
+    let nextId = 0;
+    function getComponentId(instance: ComponentInstance): string {
+        let id = componentIds.get(instance);
+        if(id === undefined) {
+            // pad, so 2 -> "02", because "02" < "10" (as opposed to "2" > "10")
+            id = (nextId++).toFixed(10);
         }
+        return id;
     }
+    let pathCache = new WeakMap<ComponentInstance, string>();
+    function getComponentIdPath(instance: ComponentInstance): string {
+        let value = pathCache.get(instance);
+        if(value !== undefined) return value;
+
+        let path = "";
+        while(instance) {
+            // ":" > [0-9], so children sort after parents.
+            path = getComponentId(instance) + ":" + path;
+            // TODO: Verify this is correct, I forget if parentComponent jumps across trees (all the time? or just some of the time? or what...)
+            let nextInstance = instance[componentInstanceStateSymbol].parentComponent;
+            if(!nextInstance) break;
+            instance = nextInstance;
+        }
+        pathCache.set(instance, path);
+        return path;
+    }
+    function getParentComponentId(instance: ComponentInstance): string {
+        let parent = instance[componentInstanceStateSymbol].parentComponent;
+        if(!parent) return "";
+        return getComponentIdPath(parent);
+    }
+
+    let rerenderQueue: ComponentInstance[]|undefined = undefined;
+    function callRerender(instance: ClassInstance) {
+        if(rerenderQueue === undefined) {
+            rerenderQueue = [];
+            let curQueue = rerenderQueue;
+            Promise.resolve().then(() => {
+                rerenderQueue = undefined;
+                for(let component of curQueue) {
+                    mountRerender(component);
+                }
+            });
+        }
+
+        if(binarySearchMapped(rerenderQueue, getParentComponentId(instance), getComponentIdPath, compareString) >= 0) {
+            // Don't add it if it has parents that are re-rendering.
+            return;
+        }
+
+        let path = getComponentId(instance);
+        let index = binarySearchMapped(rerenderQueue, path, getComponentIdPath, compareString);
+        if(index >= 0) {
+            // Don't add it multiple times
+            return;
+        }
+        index = ~index;
+        // Remove all descendants
+        while(index < rerenderQueue.length && getComponentIdPath(rerenderQueue[index]).startsWith(path)) {
+            rerenderQueue.splice(index, 1);
+        }
+        rerenderQueue.splice(index, 0, instance);
+    }
+
 
     return Mount2<ClassInstance>(
+        virtualDom,
         rootElement,
+        XSSComponentCheck,
         () => {
             return true;
         },
-        rootRunCode,
+        (code) => code(),
         // create
         ({ props, Class }) => {
             let instance = new Class(props);
@@ -60,16 +97,12 @@ export function MountVanillaComponents(
             instance.componentId = Date.now() + "_" + Math.random();
 
             function forceUpdate(callback?: () => void) {
-                if(updateQueue !== undefined) {
-                    insertIntoListMapped(updateQueue, instance as any as (ComponentInstance&ComponentInstanceState), x => x[componentInstanceStateSymbol].treeNode.depth, (a, b) => a - b, "ignore");
-                } else {
-                    // as any, as types are added by Mount2 to our instance after we return it.
-                    mountRerender(instance as any, XSSComponentCheck);
-                }
-        
-                if(callback) {
-                    rootRunCode(callback);
-                }
+                callRerender(instance);
+                Promise.resolve().then(() => {
+                    if(callback) {
+                        callback();
+                    }
+                });
             }
 
             (instance as any as React.Component<{}, {}>).setState = function(newState: { [key: string]: unknown }, callback?: () => void) {
@@ -83,20 +116,13 @@ export function MountVanillaComponents(
             (instance as any as React.Component<{}, {}>).forceUpdate = function(callback?: () => void) {
                 forceUpdate(callback);
             };
-            components[instance.componentId] = { instance };
             return instance;
         },
         // update
         (instance, newProps) => {
-            components[instance.componentId].instance.props = newProps;
+            instance.props = newProps;
         },
         // delete
-        () => {},
-        {
-            rootJSX: virtualDom,
-            treeNodes: {},
-            parentComponent: undefined
-        },
-        XSSComponentCheck
+        () => {}
     );
 }

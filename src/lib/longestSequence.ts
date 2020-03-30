@@ -5,13 +5,13 @@ import { binarySearch } from "./algorithms";
  *  (where new index is the value in the array, and original index is the index in the array).
  */
 export function LongestSequence(arr: number[]): {
-    longestSequence: number[];
+    //longestSequence: number[];
     // The remaining sequence values, not in the longest sequence
     otherSequence: number[];
 } {
     if(arr.length === 0) {
         return {
-            longestSequence: [],
+            //longestSequence: [],
             otherSequence: [],
         };
     }
@@ -64,23 +64,25 @@ export function LongestSequence(arr: number[]): {
     let lastBestSeqIndex = longestSequencesByLength[longestSequencesByLength.length - 1];
 
 
-    let longestSequence: number[] = [];
-    let usedIndexes: { [index: number]: true } = {};
+    //let longestSequenceBackwards: number[] = [];
+    let usedIndexes: Set<number> = new Set();
     while(lastBestSeqIndex !== -1) {
-        longestSequence.unshift(lastBestSeqIndex);
-        usedIndexes[lastBestSeqIndex] = true;
+        //longestSequenceBackwards.push(lastBestSeqIndex);
+        usedIndexes.add(lastBestSeqIndex);
         lastBestSeqIndex = prevSequenceIndex[lastBestSeqIndex];
     }
 
     let otherSequence: number[] = [];
 
     for(let i = 0; i < arr.length; i++) {
-        if(i in usedIndexes) continue;
+        if(usedIndexes.has(i)) continue;
         otherSequence.push(i);
     }
-
+    //let longestSequence = longestSequenceBackwards.reverse();
+    
+    
     return {
-        longestSequence: longestSequence.map(x => arr[x]),
+        //longestSequence: longestSequence.map(x => arr[x]),
         otherSequence: otherSequence.map(x => arr[x])
     };
 }

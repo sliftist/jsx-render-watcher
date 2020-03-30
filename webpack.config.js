@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 
+
 function getConfig(env, argv) {
     let config = {
         mode: "development",

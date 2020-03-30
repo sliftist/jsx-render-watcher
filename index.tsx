@@ -33,8 +33,9 @@ if(typeof window !== "undefined") {
 }
 
 
-let count = 1000 * 1;
-let sparseCount = 1000 * 10;
+let count = 1000 * 50;
+let sparseCount = 1000 * 50;
+
 let libs = [
     { name: "react", renderLib: React, mountLib: ReactDOM },
     { name: "preact", renderLib: preact, mountLib: preact },
@@ -50,21 +51,19 @@ let libs = [
 ];
 
 setTimeout(async function() {
-    runTestSparseDom();
-
-    /*
-    console.group("no keys");
     await runTest(false);
-    console.groupEnd();
-
-    console.group("keys");
     await runTest(true);
-    console.groupEnd();
-    */
-}, 1000);
+    runTestSparseDom();
+}, 1000 * 1);
+
+
+//todonext;
+// We need a sort algorithm, that can support specifications that say certain elements are already in order,
+//  and then outputs the list of swaps/whatever to make the changes.
 
 
 async function runTestHarness(
+    name: string,
     code: (config: {
         renderLib: any;
         mountLib: any;
@@ -72,6 +71,7 @@ async function runTestHarness(
         renderOperation: (name: string, code: () => Promise<void>|void) => Promise<void>;
     }) => Promise<void>
 ) {
+    console.group(`Test ${name}`);
     let htmlOutput: string[] | undefined = undefined
     for(let { name, renderLib, mountLib } of libs) {
         let root = document.body.appendChild(document.createElement("div"));
@@ -94,7 +94,7 @@ async function runTestHarness(
             }
         }
 
-        console.group(`Testing ${name}`);
+        console.group(`Testing library ${name}`);
         await code({
             renderLib,
             mountLib,
@@ -116,10 +116,11 @@ async function runTestHarness(
             htmlOutput = curOutput;
         }
     }
+    console.groupEnd();
 }
 
 async function runTest(useKeys: boolean) {
-    runTestHarness(async ({renderLib, mountLib, root, renderOperation}) => {
+    await runTestHarness(`splice rerender ${useKeys ? "keys" : "no keys"}`, async ({renderLib, mountLib, root, renderOperation}) => {
         let instance!: Component;
         class Component extends renderLib.Component<{}, {}> {
             render() {
@@ -139,13 +140,17 @@ async function runTest(useKeys: boolean) {
         );
 
         await renderOperation("initial render", () => {
-            mountLib.render(renderLib.createElement(Component, {}), root);
+            let component = renderLib.createElement(Component, {});
+            mountLib.render(component, root);
         });
 
         await renderOperation("rerender", async () => {
-            let spliceStart = 5;
             let spliceCount = 10;
-            jsx.splice(spliceStart, spliceCount);
+            let offset = 5;
+            let move1 = jsx.splice(-spliceCount - offset, spliceCount);
+            let move2 = jsx.splice(offset, spliceCount, ...move1);
+            jsx.splice(-offset, 0, ...move2);
+            
             // TODO: Add arrayDelta to jsx, to test efficient rerendering
             await new Promise(resolve => instance.forceUpdate(resolve));
         });
@@ -153,7 +158,7 @@ async function runTest(useKeys: boolean) {
 }
 
 async function runTestSparseDom() {
-    runTestHarness(async ({renderLib, mountLib, root, renderOperation}) => {
+    await runTestHarness("empty dom, large vdom, then single dom addition", async ({renderLib, mountLib, root, renderOperation}) => {
         let nestedComponentByIndex = new Map<number, NestedComponent>();
         let selectedNestedComponentIndex = -1;
 
@@ -189,7 +194,9 @@ async function runTestSparseDom() {
 
         await renderOperation("rerender", async () => {
             selectedNestedComponentIndex = sparseCount / 2;
-            await new Promise(resolve => nestedComponentByIndex.get(selectedNestedComponentIndex)?.forceUpdate(resolve));
+            await new Promise(resolve => {
+                nestedComponentByIndex.get(selectedNestedComponentIndex)?.forceUpdate(resolve)
+            });
         });
     });
 }

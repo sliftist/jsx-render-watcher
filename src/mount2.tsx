@@ -1,13 +1,16 @@
 /** Copied directly out of query-sub, from src/sync/html/mount2.tsx */
 
+/**     SUMMARY
+ * 
+ *  For each DOM node we have a child virtual tree, which we follow until we find another dom node, at which
+ *      point we stop that virtual tree.
+ * 
+ *  Re-renders always start with a DOM node, and some part of their virtual tree which changes, which then results
+ *      in some child DOM nodes changing, being created, moved, etc, and then THEIR virtual trees being
+ *      triggered, until everything updates.
+ */
 
 import { UnionUndefined, isPrimitive, isArray } from "./lib/type";
-
-/*
-import { Node } from "../../build/ReactOverride";
-import { setAccessor } from "./preact.dom";
-import { LongestSequence } from "../../algorithms/longestSequence";
-*/
 
 import { insertIntoListMapped, binarySearchMapped, sort } from "./lib/algorithms";
 
@@ -17,26 +20,16 @@ import { LongestSequence } from "./lib/longestSequence";
 import { setAccessor } from "./lib/preact-dom";
 
 export const mountContextSymbol = Symbol("mountContextSymbol");
-export const mountDepthSymbol = Symbol("mountDepthSymbol");
-export const mountRenderTreeChildLeaf = Symbol("mountRenderTreeChildLeaf");
-const recordOfMountsSymbol = Symbol("recordOfMounts");
+export const mountTree = Symbol("mountTree");
 
 const reactSymbol = Symbol.for("react.element");
 
 export function CleanNode(childNode: ChildNode & DOMNodeExtraSymbols) {
-    delete childNode[mountContextSymbol];
-    delete childNode[mountDepthSymbol];
-    delete childNode[mountRenderTreeChildLeaf];
-    delete childNode[recordOfMountsSymbol];
+    delete childNode[mountTree];
 }
 
-
-
 interface DOMNodeExtraSymbols {
-    [mountContextSymbol]?: MountContext;
-    [mountDepthSymbol]?: number;
-    [mountRenderTreeChildLeaf]?: RenderTreeChildLeaf;
-    [recordOfMountsSymbol]?: RenderTreeChild;
+    [mountTree]?: RenderTreeChild;
 }
 
 interface LookupTypeBase { [key: string]: unknown }
@@ -65,7 +58,17 @@ type BaseComponentProps = { [key: string]: unknown };
 export interface ComponentProps extends BaseComponentProps { }
 
 
-export type ComponentInstance = {
+
+export const componentInstanceStateSymbol = Symbol("componentInstanceStateSymbol");
+export type ComponentInstanceState = {
+    [componentInstanceStateSymbol]: {
+        parentDomNode: ChildNode & DOMNodeExtraSymbols;
+        parentComponent: ComponentInstance|undefined;
+        treeNode: RenderTreeChild;
+    }
+};
+
+export type ComponentInstance = ComponentInstanceState & {
     render(): JSXNode;
     props?: LookupType;
     state?: LookupType;
@@ -81,7 +84,6 @@ export interface CreateComponent<ComponentType extends ComponentInstance> {
             props: { [key: string]: unknown };
             Class: { new(props: ComponentProps): ComponentType }
             parent: ComponentType|undefined;
-            depth: number;
         }
     ): ComponentType;
 }
@@ -114,39 +116,36 @@ export interface RemoveFncPropCallback {
 type RenderTreeChildBase = {
     key: string|null;
     
-    async: boolean;
-    pendingAsyncVirtualDom: JSXNode;
-    // This is used in case this node is removed while we are async rendering. If true
-    //  we know to give up on this async render.
-    removed: boolean;
+    pendingVirtualDom: JSXNode;
+
+    // Set to false when we are moving it around. This is set in batches, so our movement
+    //  doesn't trip up on itself.
+    attachedToDOM: boolean;
+    // A temporary variable we use in our reconcilation code
+    tempPrevIndex: number;
+    tempNewIndex: number;
+    // The identifying name describing the type of the tree node. Anything that has a typeName
+    //  equal to this node may be matched with this node during reconcilation.
+    //  - For dom nodes this means the nodes (not their children, or dom properties, just the nodes themselves) better
+    //      be interchangable, or else the parent node type will be wrong.
+    // setTypeName
+    typeName: string;
 
     seqId: number;
 
-    // Needed to allow us to reason about nodes without iterating on them (as in, to insert before or after them)
-    //*
-    firstDomNode: ChildNode|null;
-    lastDomNode: ChildNode|null;
-
-    
-
-
     // Used to allow modifying a component that is one of many children, without have to iterate through
     //  all the children in order to find where the component's nodes should be inserted.
-    prevSiblingNode: RenderTreeChild|null;
-
-    // Used to figure out indexes
-    nestedDomNodeCount: number;
-
-    // Used to decide what order to iterate nodes on.
-    depth: number;
+    prevSiblingNode: RenderTreeChild|undefined;
 
     // If type === "component", this is just the component at this node. Otherwise, it is the component
     //  of nearest ancestor, or undefined if that doesn't exist.
-    component: ComponentInstance|undefined;
+    //  Once set never changes, which makes sense because if a component is reused with new jsx, the
+    //      instance we be reused as well (that is kind of the point)
+    readonly component: ComponentInstance|undefined;
 
     parentTreeNode: RenderTreeChild|undefined;
 
-    context: MountContext;
+    readonly context: MountContext;
 };
 
 
@@ -155,6 +154,9 @@ type RenderTreeChildLeaf = RenderTreeChildBase & {
     jsxType: string; // type if it is a DOMElement, otherwise just "primitive"
     jsx: JSXNodeLeaf;
     childNode: ChildNode & DOMNodeExtraSymbols;
+
+    /** The next tree, unconnected to us except by this connection, which isn't usually iterated on. */
+    childTree: RenderTreeChildKeyOnly|undefined;
 };
 
 type RenderTreeChildComponent = RenderTreeChildBase & {
@@ -227,88 +229,10 @@ function createJSXFromNode(node: ChildNode): JSXNodeLeaf {
 }
 
 
-
-
-
-
-type RerenderContext = {
-    rootJSX?: JSXNode;
-    treeNodes: { [seqId: number]: RenderTreeChild };
-    parentComponent: ComponentInstance|undefined;
-}
-
-export const componentInstanceStateSymbol = Symbol("componentInstanceStateSymbol");
-export type ComponentInstanceState = {
-    [componentInstanceStateSymbol]: {
-        parentDomNode: ChildNode & DOMNodeExtraSymbols;
-        parentComponent: ComponentInstance|undefined;
-        treeNode: RenderTreeChild;
-    }
-};
-
-export function mountRerender(
-    component: (ComponentInstance & ComponentInstanceState),
-    XSSComponentCheck: boolean
-) {
-    // TODO: If we ever want to do component sibling swaps we should accept an array of components to rerender
-    //  (as multiple might be pending to rerender), but for now... we rerender components in isolation anyway,
-    //  so there is no reason to batch them.
-
-    let { parentDomNode, parentComponent, treeNode } = component[componentInstanceStateSymbol];
-    let context = parentDomNode[mountContextSymbol];
-    if(!context) {
-        console.error(`Cannot rerender, no mount context found for dom node`);
-        return;
-    }
-
-    // TODO: Actually... if multiple siblings are triggered this can be faster. HOWEVER, it is a bit tricky to detect this with
-    //  a single priority number in SyncFunctions, so we would need to accept many components, and
-
-    mount2Internal(
-        parentDomNode,
-        context,
-        {
-            parentComponent,
-            treeNodes: { [treeNode.seqId]: treeNode }
-        },
-        XSSComponentCheck
-    );
-}
-
-
-let initializeDomNodeDidRenderLog = false;
-function initializeDomNode<T extends ChildNode>(
-    domNode: T,
-    parentNode: ChildNode & DOMNodeExtraSymbols,
-    treeNode: RenderTreeChildLeaf
-): T & DOMNodeExtraSymbols {
-    return Object.assign(domNode, {
-        [mountContextSymbol]: parentNode[mountContextSymbol],
-        [mountDepthSymbol]: (parentNode[mountDepthSymbol] || 0) + 1,
-        [mountRenderTreeChildLeaf]: treeNode
-    });
-}
-
-
-
-
-
-
-// So...
-//  We either remount:
-//  1) At the top level, and then remount all of our children
-//  2) At a component level, which is kind of in the middle
-//  3) At a dom node level, which is at the leaves
-// And possibly:
-//  4) At an intermediate virtual node level, because there were so many nested fragments (but this is not needed,
-//      and I have no plans to implement this ever).
-
-// TODO: We should queue up all rerender calls of components, so we can evaluate them from root most to leaf most,
-//  that way don't re-render a child, and then re-render the parent, which requires re-rendering the child again.
-
 let nextSeqId = 1;
 
 export interface MountContext<OurComponentType extends ComponentInstance = ComponentInstance> {
+    XSSComponentCheck: boolean;
     isFncTriggered: (fnc: Function) => boolean;
     runRootCode: (code: () => void) => void;
     createComponent: CreateComponent<OurComponentType>;
@@ -342,45 +266,94 @@ function wrapWithRootCodeFnc(fnc: Function, runRootCode: (code: () => void) => v
     }
 }
 
+/** Creates a dom node that contains the entire child tree for a child.
+ *      - There was no reason to hold the ChildNode of the parent, because this only changes
+ *          when the parent dom nodes changes, as children of dom elements can independently change
+ *          (only components can independently change, and they DO store their ChildNode parent).
+*/
+function createDomChildrenTreeNode(
+    context: MountContext,
+    jsx: JSXNode,
+    component: ComponentInstance|undefined,
+): RenderTreeChildKeyOnly {
+    return {
+        key: "root",
+        // keyOnly, just because we only support a few types, and we don't support any "raw, but no key" type, because...
+        //  usually the only reason for raw nodes is to apply keys...
+        type: "keyOnly",
+        pendingVirtualDom: jsx,
+
+        attachedToDOM: true,
+        tempNewIndex: 0,
+        tempPrevIndex: 0,
+        typeName: "",
+
+        nested: [],
+        seqId: nextSeqId++,
+        
+        
+        prevSiblingNode: undefined,
+        component,
+
+        parentTreeNode: undefined,
+
+        context
+    };
+}
+
 export function Mount2<ComponentType extends ComponentInstance>(
-    parentNode: ChildNode & { [mountContextSymbol]?: MountContext<ComponentType> },
+    jsx: JSXNode,
+    parentNode: ChildNode & DOMNodeExtraSymbols,
+    /** If true, elements are only recognized when they have a property called: ["$$typeof"], equal to Symbol.for("react.element"). Otherwise they are rendered
+     *      as objects are (the key being the fragment key, the property being a value, the result always being text nodes, and never elements).
+     */
+    XSSComponentCheck: boolean,
     isFncTriggered: (fnc: Function) => boolean,
     runRootCode: (code: () => void) => void,
     createComponent: CreateComponent<ComponentType>,
     updateComponentProps: UpdateComponentProps<ComponentType>,
     onRemoveComponent: OnRemoveComponent<ComponentType>,
-    remountContext: RerenderContext,
-    XSSComponentCheck: boolean,
     addFncPropCallback: AddFncPropCallback = (id, fnc) => wrapWithRootCodeFnc(fnc, runRootCode),
     changedFncPropCallback: ChangedFncPropCallback = (id, fnc) => wrapWithRootCodeFnc(fnc, runRootCode),
     removeFncPropCallback: RemoveFncPropCallback = () => {},
 ): void {
-    let context = parentNode[mountContextSymbol];
-    if(!context) {
-        context = parentNode[mountContextSymbol] = {
-            isFncTriggered,
-            createComponent,
-            updateComponentProps,
-            onRemoveComponent,
-            runRootCode,
-            addFncPropCallback,
-            changedFncPropCallback,
-            removeFncPropCallback,
+
+
+    let rootRenderTree: RenderTreeChild|undefined = parentNode[mountTree];
+    if(!rootRenderTree) {
+        let contextNew: MountContext<ComponentType> = {
+            XSSComponentCheck,
+            addFncPropCallback, changedFncPropCallback, createComponent, isFncTriggered, onRemoveComponent, removeFncPropCallback, runRootCode, updateComponentProps
         };
-    } else {
-        if(context.createComponent !== createComponent
-        || context.updateComponentProps !== updateComponentProps
-        || context.onRemoveComponent !== onRemoveComponent) {
-            throw new Error(`We already mounted on this dom element, but with different callback functions. This isn't going to work...`);
+        let context = contextNew as any as MountContext;
+
+        rootRenderTree = createDomChildrenTreeNode(context, jsx, undefined);
+
+        // TODO: Instead of removing all existing children, we could load in the existing DOM into a virtual dom tree, that way
+        //  we don't have to recreate the entire DOM (instead we just read all of it, which should be faster then recreating it...).
+        let { childNodes } = parentNode;
+        for(let i = childNodes.length - 1; i >= 0; i--) {
+            childNodes[i].remove();
         }
     }
+    parentNode[mountTree] = rootRenderTree;
 
-    mount2Internal(
-        parentNode as ChildNode & DOMNodeExtraSymbols,
-        context as any as MountContext<ComponentInstance>,
-        remountContext,
-        XSSComponentCheck
-    );
+    mount2Tree(rootRenderTree, parentNode);
+}
+
+export function mountRerender(
+    component: (ComponentInstance & ComponentInstanceState),
+) {
+    // TODO: If we ever want to do component sibling swaps we should accept an array of components to rerender
+    //  (as multiple might be pending to rerender), but for now... we rerender components in isolation anyway,
+    //  so there is no reason to batch them.
+
+    let { parentDomNode, treeNode } = component[componentInstanceStateSymbol];
+
+    // TODO: Actually... if multiple siblings are triggered this can be faster. HOWEVER, it is a bit tricky to detect this with
+    //  a single priority number in SyncFunctions, so we would need to accept many components, and
+
+    mount2Tree(treeNode, parentDomNode);
 }
 
 function setPropertyWrapper(treeNode: RenderTreeChildLeaf, name: string, oldValue: unknown, value: unknown, nodeRemoved = false) {
@@ -415,234 +388,42 @@ function setPropertyWrapper(treeNode: RenderTreeChildLeaf, name: string, oldValu
 }
 
 
-// This is called recursively on dom nodes, and handles all the intermediate structure (arrays, objects, fragments, components),
-//  that don't actually emit dom nodes. It stores some state in the dom node, that way the caller doesn't need to store a tree
-//  with rerender information.
-export function mount2Internal(
-    parentNode: ChildNode & DOMNodeExtraSymbols,
-    context: MountContext,
-    remountContext: RerenderContext,
-    /** If true, elements are only recognized when they have a property called: ["$$typeof"], equal to Symbol.for("react.element"). Otherwise they are rendered
-     *      as objects are (the key being the fragment key, the property being a value, the result always being text nodes, and never elements).
-     */
-    XSSComponentCheck: boolean
-): void {
-    // Steps:
-    //  1) Update RenderTreeChild for all children (recursively) of all nodes that requested to be changed.
-    //      - Take existing domNodes where we can, make pendingDomNodes otherwise, record domNodes (remove unused
-    //          tree nodes from the tree).
-    //      - Output the order we iterate on, which is the order the domNodes should appear in the dom
-    //      - Don't iterate on any async renders, unless they were explicitly triggered
-    //      - Create new dom nodes and apply prop changes
-    //  2) Delete all unused nodes
-    //  3) Order all existing domNodes based on the order outputted from the update RenderTreeChild step
-    //  4) Add new nodes
-    //  5) Take the children property of the jsx of all the elements we created and call Mount2 with that property as the new
-    //      jsx property, and the element as the parent.
 
-
-    // TODO: Add delayed node creation so we can do "global" (to our dom children at least) component matching. To do
-    //  this we need to flatten treeNodeTransformations, which requires adding very careful code (which requires looking
-    //  at nested a lot) to iterate over the parents of these transformed tree nodes to try combine? (not just flatten,
-    //  we might be able to combine two siblings for benefit with combining all of them) the root changed nodes.
-    //  This requires finding their absolute dom index (within our parent), which requires iterating over all siblings
-    //  of our ancestors, which we want to avoid if we are only moving 2 dom nodes, and are part of a list of 100,000,
-    //  but which we want to do if we invalidated two component whose have child components that we want to swap.
-
-
-    //mark("mount2_nothing");
-    //mark("mount2_nothing", true);
-
-    //mark("mount2_setup");
-
-
+/** Mount/remount the given virtual tree */
+function mount2Tree(
+    tree: RenderTreeChild,
+    parentNode: ChildNode & DOMNodeExtraSymbols
+) {
+    let context = tree.context;
 
     let { isFncTriggered, createComponent, updateComponentProps, onRemoveComponent } = context;
 
-    let parentNodeTyped = Object.assign(parentNode, {
-        [mountContextSymbol]: context,
-        [mountDepthSymbol]: parentNode[mountDepthSymbol] || 0
-    });
-
     let document = parentNode.ownerDocument as Document;
 
-    //.todonext;
-    // Dedupe childrenToRemount, with respect to tree hierarchy, so that if a parent and child triggers, we only
-    //  actually trigger the parent change...
-    let childrenToRemount: RenderTreeChild[];
-    let treeNodesForceUpdated: { [seqId: number]: true } = {};
+    updateTreeNode(tree);
 
-    //console.log(`mount at depth ${parentNodeTyped[mountDepthSymbol]}`);
-
-    let rootRenderTree: RenderTreeChild|undefined = parentNode[recordOfMountsSymbol];
-    if(!("rootJSX" in remountContext)) {
-        if(!(rootRenderTree)) {
-            throw new Error(`Cannot remount specific for the first render! Either the dom node was changed outside of our environment (wiping out our previous data), or this function was called incorrectly.`);
-        }
-        childrenToRemount = Object.values(remountContext.treeNodes);
-        for(let child of childrenToRemount) {
-            treeNodesForceUpdated[child.seqId] = true;
-        }
-    } else {
-        if(rootRenderTree) {
-            if(rootRenderTree.type !== "keyOnly" || !rootRenderTree.async) {
-                throw new Error(`Expect root render tree to have a type of keyOnly, and be async.`);
-            }
-            
-            rootRenderTree.pendingAsyncVirtualDom = { key: "root", props: { children: remountContext.rootJSX } };
-        } else {
-            // Create dom nodes to represent the existing state, so we can reuse it.
-            //  (this is required, as we might want to remount with existing siblings, or we might
-            //  want to remount from server generated dom, although in that case we can probably just
-            //  send the server generated RecordOfMounts too...)
-
-            // TODO: Allow the user to input specific nodes, letting us mount next to existing siblings and not remove them.
-            childrenToRemount = [];
-
-            let nestedChildNodes: RenderTreeChild[] = [];
-            let { childNodes } = parentNode;
-            let prevSiblingNode: RenderTreeChild|null = null;
-            for(let i = 0; i < childNodes.length; i++) {
-                let childNode = childNodes[i];
-                let treeNode: RenderTreeChild = {
-                    type: "domNode",
-                    jsxType: childNode.nodeType === 1 /* Node.ELEMENT_NODE */ ? (childNode as HTMLElement).tagName : "primitive",
-                    jsx: createJSXFromNode(childNode),
-
-                    async: false,
-                    pendingAsyncVirtualDom: undefined,
-                    removed: false,
-                    key: null,
-                    seqId: nextSeqId++,
-                    depth: 1,
-                    childNode: undefined as any,
-                    nestedDomNodeCount: 1,
-                    firstDomNode: childNode,
-                    lastDomNode: childNode,
-                    prevSiblingNode: prevSiblingNode,
-                    component: remountContext.parentComponent,
-
-                    parentTreeNode: parentNode[mountRenderTreeChildLeaf],
-
-                    context
-                };
-                treeNode.childNode = initializeDomNode(childNode, parentNodeTyped, treeNode);
-                
-                nestedChildNodes.push(treeNode);
-                prevSiblingNode = treeNode;
-            }
-
-            rootRenderTree = parentNode[recordOfMountsSymbol] = {
-                key: "root",
-                // keyOnly, just because we only support a few types, and we don't support any "raw, but no key" type, because...
-                //  usually the only reason for raw nodes is to apply keys...
-                type: "keyOnly",
-                // I forget why this needs to be async. I think it is because our synced components
-                //  trigger renders themselves... which works. So I guess this code won't work for rerenders
-                //  of non-synced components ever?
-                async: true,
-                // Must have a key that matches with the key of our tree node.
-                //  (this is unwrapped specially, with the special keyOnly handling).
-                pendingAsyncVirtualDom: { key: "root", props: { children: remountContext.rootJSX } },
-                removed: false,
-                nested: nestedChildNodes,
-                seqId: nextSeqId++,
-                depth: 0,
-                firstDomNode: null,
-                lastDomNode: null,
-                nestedDomNodeCount: 0,
-                prevSiblingNode: null,
-                component: remountContext.parentComponent,
-
-                parentTreeNode: parentNode[mountRenderTreeChildLeaf],
-
-                context
-            };
-
-            let nested = rootRenderTree.nested;
-            rootRenderTree.firstDomNode = null;
-            for(let i = 0; i < nested.length; i++) {
-                let nest = nested[i];
-                if(nest.firstDomNode) {
-                    rootRenderTree.firstDomNode = nest.firstDomNode;
-                    break;
-                }
-            }
-
-            rootRenderTree.lastDomNode = null;
-            for(let i = nested.length - 1; i >= 0; i--) {
-                let nest = nested[i];
-                if(nest.lastDomNode) {
-                    rootRenderTree.lastDomNode = nest.lastDomNode;
-                    break;
-                }
-            }
-
-            rootRenderTree.nestedDomNodeCount = 0;
-            for(let nested of rootRenderTree.nested) {
-                rootRenderTree.nestedDomNodeCount += nested.nestedDomNodeCount;
-            }
-        }
-        childrenToRemount = [rootRenderTree];
-
-        treeNodesForceUpdated[rootRenderTree.seqId] = true;
-        for(let key in remountContext.treeNodes) {
-            treeNodesForceUpdated[key] = true;
-        }
-    }
-
-
-    //todonext;
-    // Break this internal remount off into another function, that takes a single RenderTreeChild as an argument.
-
-
-    type TreeNodeTransformations = {
-        rootNode: RenderTreeChild;
-        changes: {
-            node: RenderTreeChild;
-            originalIndex: number|undefined;
-            newIndex: number|undefined;
-        }[];
-    };
-
-    let treeNodeTransformations: {
-        [seqId: number]: TreeNodeTransformations;
-    } = {};
-    let curTreeNodeTransformation: TreeNodeTransformations;
-
-    let treeNodesUpdated: { [seqId: number]: true } = {};
-
-    // All the nodes with child dom nodes (so the nodes we have to iterate further on) (that have changed, been added, or been removed).
-    let addedOrMovedNestedTreeLeafs: RenderTreeChildLeaf[] = [];
-    let removedNestedTreeLeafs: RenderTreeChildLeaf[] = [];
-
-    //mark("mount2_setup", true);
-    
-
-    // TODO: Support global component (and maybe dom node) reuse. This requires delaying object creation until after the tree
-    //  loop, and calculating newIndex differently.
-
-    // NOTE: We iterate forwards instead of backwards (as backwards works well with insertBefore, but forward requires nextSibling),
-    //  to make it so that when we support stopping iteration and async rendering the remaining items we will have rendered the first part
-    //  of the page (iterating backwards would mean stopping at any point will leave only the last part of the page rendered). And the first
-    //  part is preferrable to the last part, as the first part is more likely to be seen, and have important information, then the last part.
+    return;
 
     function getText(jsx: unknown): string {
         let text = "";
-        if(jsx == null || jsx === false || jsx === true) {
+        if(!jsxHasOutput(jsx)) {
             text = "";
         } else {
             text = String(jsx);
         }
         return text;
     }
+    function jsxHasOutput(jsx: unknown) {
+        return !(jsx === null || jsx === undefined || jsx === false || jsx === true);
+    }
 
     // Only called for components, or domNodes (which are always terminal)
+    //  - Does not attach to the dom, just creates the node
+    //  - Does not recursively create the node, leaves that to updateTreeNode by setting pendingVirutalDom
+    //  - Does not set dom properties, updateTreeNode does that
     function createTreeNode(
         newJSX: JSXNode,
-        parent: RenderTreeChild,
-        newIndexStart: number,
-        prevSiblingNode: RenderTreeChild|null,
+        parent: RenderTreeChild
     ): RenderTreeChild {
 
         //console.log(`create node`, Date.now() % 1000);
@@ -658,98 +439,81 @@ export function mount2Internal(
             let text = getText(newJSX);
             
             let seqId = nextSeqId++;
-            let nodeTyped = createdNode = {
+            let childNode = document.createTextNode(text);
+            let nodeTyped: RenderTreeChildLeaf = createdNode = {
                 type: "domNode",
                 jsxType: "primitive",
-                jsx: newJSX,
-                childNode: undefined as any,
+                jsx: undefined,
+                childNode,
 
                 key: null,
-                async: false,
-                pendingAsyncVirtualDom: undefined,
-                removed: false,
+                pendingVirtualDom: newJSX,
+
+                attachedToDOM: false,
+                tempNewIndex: 0,
+                tempPrevIndex: 0,
+                typeName: "",
 
                 seqId,
-                depth: parent.depth + 1,
 
-                firstDomNode: undefined as any,
-                lastDomNode: undefined as any,
-
-                nestedDomNodeCount: 1,
-
-                prevSiblingNode: prevSiblingNode,
+                prevSiblingNode: undefined,
 
                 component: parent.component,
 
                 parentTreeNode: parent,
 
-                context
-            };
-            let childNode = initializeDomNode(document.createTextNode(text), parentNodeTyped, nodeTyped);
-            nodeTyped.childNode = nodeTyped.firstDomNode = nodeTyped.lastDomNode = childNode;
+                context,
 
-            curTreeNodeTransformation.changes.push({
-                node: nodeTyped,
-                newIndex: newIndexStart,
-                originalIndex: undefined
-            });
+                childTree: undefined
+            };
+
+            if(jsxHasOutput(newJSX)) {
+                nodeTyped.childTree = createDomChildrenTreeNode(context, newJSX, parent.component)
+            }
+
+            setTypeName(nodeTyped);
         } else if("type" in newJSX) {
             let key = newJSX.key != null ? String(newJSX.key) : null;
 
-            if(XSSComponentCheck && !(reactSymbol in newJSX)) {
+            if(context.XSSComponentCheck && !(reactSymbol in newJSX)) {
                 throw new Error(`Object which looked like XSS attempted to be mounted as root or re-rendered. The XSS check is on, so perhaps this is just a component created without ["$$typeof"] = Symbol.for("react.element") ?`);
             }
 
             if(typeof newJSX.type === "string") {
                 
                 let seqId = nextSeqId++;
-                let nodeTyped = createdNode = {
+                let nodeTyped: RenderTreeChildLeaf = createdNode = {
                     type: "domNode",
                     jsxType: newJSX.type,
-                    jsx: newJSX,
-                    childNode: undefined as any,
+                    jsx: undefined,
+                    childNode: document.createElement(newJSX.type),
 
                     key,
-                    async: false,
-                    pendingAsyncVirtualDom: undefined,
-                    removed: false,
+                    pendingVirtualDom: newJSX,
+
+                    attachedToDOM: false,
+                    tempNewIndex: 0,
+                    tempPrevIndex: 0,
+                    typeName: "",
+                    
 
                     seqId,
-                    depth: parent.depth + 1,
 
-                    prevSiblingNode,
+                    prevSiblingNode: undefined,
 
-                    nestedDomNodeCount: 1,
-
-                    firstDomNode: undefined as any,
-                    lastDomNode: undefined as any,
 
                     component: parent.component,
 
                     parentTreeNode: parent,
 
-                    context
+                    context,
+                    childTree: undefined,
                 };
-                let childNode = initializeDomNode(document.createElement(newJSX.type), parentNodeTyped, nodeTyped);
-                nodeTyped.childNode = nodeTyped.firstDomNode = nodeTyped.lastDomNode = childNode;
-
-                curTreeNodeTransformation.changes.push({
-                    node: nodeTyped,
-                    newIndex: newIndexStart,
-                    originalIndex: undefined
-                });
-
-                for(let key in newJSX.props) {
-                    if(key === "children") continue;
-                    let value = newJSX.props[key];
-                    let oldValue = undefined;
-                    if(value === oldValue) {
-                        continue;
-                    }
-                    setPropertyWrapper(nodeTyped, key, oldValue, value);
-                }
-
-                addedOrMovedNestedTreeLeafs.push(nodeTyped);
+                let childJSX = newJSX.props.children;
+                if(jsxHasOutput(childJSX)) {
+                    nodeTyped.childTree = createDomChildrenTreeNode(context, childJSX, parent.component)
+                }    
+                setTypeName(nodeTyped);
             } else {
                 if(typeof newJSX.type !== "function") {
                     throw new Error(`type must have typeof === "function" (classes have this, so this isn't a class or a function).`);
@@ -760,23 +524,23 @@ export function mount2Internal(
                             type: "keyOnly",
                             key: String(newJSX.key),
 
-                            async: false,
-                            pendingAsyncVirtualDom: undefined,
-                            removed: false,
+                            pendingVirtualDom: newJSX,
+
+                            attachedToDOM: false,
+                            tempNewIndex: 0,
+                            tempPrevIndex: 0,
+                            typeName: "",
+                            
                             seqId: nextSeqId++,
-                            firstDomNode: null,
-                            lastDomNode: null,
-                            prevSiblingNode: prevSiblingNode,
-                            nestedDomNodeCount: 0,
-                            depth: parent.depth + 1,
+                            
+                            prevSiblingNode: undefined,
+                            
                             component: undefined,
                             parentTreeNode: parent,
                             context,
                             nested: [],
                         };
 
-                        // This populates createdNode.nested, nestedDomNodeCount, firstDomNode and lastDomNode
-                        updateTreeNode(createdNode, newJSX, undefined, newIndexStart);
                         return createdNode;
                     }
 
@@ -787,10 +551,9 @@ export function mount2Internal(
                     Class: newJSX.type as any,
                     props: newJSX.props,
                     parent: parent.component,
-                    depth: parent.depth + 1,
                 }), {
                     [componentInstanceStateSymbol]: {
-                        parentDomNode: parentNodeTyped,
+                        parentDomNode: parentNode,
                         parentComponent: parent.component,
                         treeNode: null as any
                     }
@@ -800,24 +563,22 @@ export function mount2Internal(
                     componentType: newJSX.type.prototype.constructor.name,
                     component: component,
                     prevProps: newJSX.props,
-                    jsx: newJSX,
+                    jsx: undefined,
                     
                     nested: [],
     
                     key,
-                    async: false,
-                    pendingAsyncVirtualDom: undefined,
-                    removed: false,
+                    pendingVirtualDom: newJSX,
+
+                    attachedToDOM: false,
+                    tempNewIndex: 0,
+                    tempPrevIndex: 0,
+                    typeName: "",
+                    
     
                     seqId: nextSeqId++,
-                    depth: parent.depth + 1,
 
-                    nestedDomNodeCount: 0,
-
-                    prevSiblingNode: prevSiblingNode,
-
-                    firstDomNode: null,
-                    lastDomNode: null,
+                    prevSiblingNode: undefined,
 
                     parentTreeNode: parent,
 
@@ -825,9 +586,6 @@ export function mount2Internal(
                 };
 
                 component[componentInstanceStateSymbol].treeNode = createdNode;
-
-                // This populates createdNode.nested, nestedDomNodeCount, firstDomNode and lastDomNode
-                updateTreeNode(createdNode, undefined, undefined, newIndexStart);
             }
             
         } else {
@@ -840,25 +598,21 @@ export function mount2Internal(
 
         return createdNode;
     }
-    function removeTreeNode(treeNode: RenderTreeChild, originalIndexStart: number): void {
-        if(treeNode.seqId in treeNodesUpdated) {
-            throw new Error(`Tried to remove node we either already removed, or already accessed?`);
-        }
-        // Update treeNodesUpdated, even for removed nodes, so we don't start updating zombie nodes.
-        //  (treeNodesUpdated is just a graph deduper).
-        treeNodesUpdated[treeNode.seqId] = true;
-        treeNode.removed = true;
+    function removeTreeNode(treeNode: RenderTreeChild): void {
 
-        // Iterate on all children, with the goal of getting leaf nodes to add to removedDomTreeNodes
+        // Remove from DOM (recursively)
+        if(treeNode.attachedToDOM) {
+            detachTreeNodeFromDom(treeNode);
+        }
+        
         if(treeNode.type === "domNode") {
             if(!isPrimitive(treeNode.jsx)) {
-                removedNestedTreeLeafs.push(treeNode);
+                // Recurses through child nodes, so their call removeTreeNode, which calls the important onRemoveComponent callback.
+                treeNode.pendingVirtualDom = null;
+                if(treeNode.childTree) {
+                    mount2Tree(treeNode.childTree, treeNode.childNode);
+                }
             }
-            curTreeNodeTransformation.changes.push({
-                node: treeNode,
-                originalIndex: originalIndexStart,
-                newIndex: undefined,
-            });
             if(treeNode.jsx && typeof treeNode.jsx === "object") {
                 let { props } = treeNode.jsx;
                 for(let key in props) {
@@ -869,10 +623,8 @@ export function mount2Internal(
             if(treeNode.type === "component") {
                 onRemoveComponent(treeNode.component);
             }
-            let originalIndexCur = originalIndexStart;
             for(let nest of treeNode.nested) {
-                removeTreeNode(nest, originalIndexCur);
-                originalIndexCur += nest.nestedDomNodeCount;
+                removeTreeNode(nest);
             }
         }
     }
@@ -881,36 +633,12 @@ export function mount2Internal(
     //  that change/create/removal to the change lists.
     // Assumes the first treeNode and newJSX match. So... you should wrap them in a dummy jsx node and tree node to force them to match.
     function updateTreeNode(
-        treeNode: RenderTreeChild,
-        newJSX: JSXNode | undefined,
-        originalIndexStart: number|undefined,
-        newIndexStart: number,
+        treeNode: RenderTreeChild
     ) {
-        if(treeNode.seqId in treeNodesUpdated) {
-            return;
-        }
-        // Update treeNodesUpdated, even for removed nodes, so we don't start updating zombie nodes.
-        treeNodesUpdated[treeNode.seqId] = true;
-
-        if(treeNode.async) {
-            if(!(treeNode.seqId in treeNodesForceUpdated)) {
-                treeNode.pendingAsyncVirtualDom = newJSX;
-                curTreeNodeTransformation.changes.push({
-                    node: treeNode,
-                    newIndex: newIndexStart,
-                    originalIndex: originalIndexStart,
-                });
-                return;
-            }
-        }
+        let newJSX = treeNode.pendingVirtualDom;
+        treeNode.pendingVirtualDom = undefined;
 
         if(treeNode.type === "domNode") {
-            curTreeNodeTransformation.changes.push({
-                node: treeNode,
-                newIndex: newIndexStart,
-                originalIndex: originalIndexStart,
-            });
-
             // Make value and attribute changes, and queue nested changes, skipping this if our JSX is identical to before.
             //  This is good for JSX objects, as it allows the user to make large JSX objects and reuse them, which we can
             //  then detect and efficiently rerender the dom below them (by not rerendering or iterating over anything).
@@ -930,35 +658,39 @@ export function mount2Internal(
                 //console.log(`set value`, text, Date.now() % 10000);
                 treeNode.childNode.nodeValue = text;
             } else {
-                // We wouldn't get matched by our parent if the prevJSX wasn't also a primitive,
-                if(isPrimitive(prevJSX)) {
-                    throw new Error(`Impossible`);
+                if(typeof prevJSX !== "object") {
+                    prevJSX = null;
                 }
-
                 for(let key in newJSX.props) {
                     if(key === "children") continue;
                     let value = newJSX.props[key];
-                    let oldValue = prevJSX.props[key];
+                    let oldValue = prevJSX && prevJSX.props[key] || undefined;
                     // style is an object, and they could very well mutate it, so we need to apply style always.
                     if(value === oldValue && key === "style") continue;
                     
                     setPropertyWrapper(treeNode, key, oldValue, value);
                 }
-                for(let key in prevJSX.props) {
-                    if(newJSX.props.hasOwnProperty(key)) continue;
-                    let value = newJSX.props[key];
-                    let oldValue = prevJSX.props[key];
-                    setPropertyWrapper(treeNode, key, oldValue, value);
+                if(prevJSX) {
+                    for(let key in prevJSX.props) {
+                        if(newJSX.props.hasOwnProperty(key)) continue;
+                        let value = newJSX.props[key];
+                        let oldValue = prevJSX.props[key];
+                        setPropertyWrapper(treeNode, key, oldValue, value);
+                    }
                 }
 
-                addedOrMovedNestedTreeLeafs.push(treeNode);
+                let childJSX = newJSX.props.children;
+                if(treeNode.childTree || jsxHasOutput(childJSX)) {
+                    if(!treeNode.childTree) {
+                        treeNode.childTree = createDomChildrenTreeNode(context, childJSX, treeNode.component);
+                    }
+                    treeNode.childTree.pendingVirtualDom = childJSX;
+                    mount2Tree(treeNode.childTree, treeNode.childNode)
+                }
             }
-
-            // domNodes are always terminal nodes
-            return;
         }
         // Unwrap treeNode
-        if(treeNode.type === "component") {
+        else if(treeNode.type === "component") {
             // Hmm... not sure the case for newJSX === undefined here? We don't call updateComponentProps, so what's the point of that?
             if(newJSX !== undefined) {
                 if(isPrimitive(newJSX) || !("props" in newJSX)) {
@@ -983,49 +715,27 @@ export function mount2Internal(
             //  be connected to the callback of the forceUpdate/setState function, so the callback is only called when all child renders are called.
             //  But then again... that all just seems like so much work...
             newJSX = treeNode.component.render();
-            /*
-            if(newJSX instanceof Promise) {
-                newJSX.then(() => {
-                    context.runRootCode(() => {
-                        mountRerender(treeNode.component, XSSComponentCheck);
-                    });
-                }, error => {
-                    console.error(`Error in async render, trying to render again anyway`, error);
-                    context.runRootCode(() => {
-                        // Mount it, so the error can be thrown synchronously (or not thrown at all)
-                        mountRerender(treeNode.component, XSSComponentCheck);
-                    });
-                });
-                return;
-            }
-            */
+
+            reconcileTree(treeNode, newJSX);
         } else if(treeNode.type === "keyOnly") {
             if(newJSX === undefined) {
                 throw new Error(`Keyed nodes should be given JSX from their parent.`);
             }
 
-            if(isPrimitive(newJSX) || !("key" in newJSX) || newJSX.key == null) {
-                throw new Error(`Matched jsx without key, with keyOnly tree node. This means we are trying to stick non-keyed jsx into a key-ed tree node, which is impossible.`);
-            }
-
-            // Unwrap the key wrapper, or else no one ever will
-            //forcedKey = String(newJSX.key);
-            if(typeof newJSX.type === "function" && !("render" in newJSX.type.prototype)) {
+            if(!isPrimitive(newJSX) && "type" in newJSX && typeof newJSX.type === "function" && !("render" in newJSX.type.prototype)) {
                 newJSX = newJSX.type(newJSX.props);
             } else {
-                newJSX = newJSX.props.children;
+                newJSX = newJSX;
             }
+
+            reconcileTree(treeNode, newJSX);
         } else {
             throw new Error(`Unrecognized type ${(treeNode as any).type}`);
         }
-
-        updateTreeNodeInternal(treeNode, newJSX, originalIndexStart, newIndexStart);
     }
-    function updateTreeNodeInternal(
+    function reconcileTree(
         treeNode: RenderTreeChild,
-        newJSX: JSXNode | undefined,
-        originalIndexStart: number|undefined,
-        newIndexStart: number,
+        newJSX: JSXNode | undefined
     ) {
         if(treeNode.type === "domNode") throw new Error(`Outer code filters this out.`);
         // TODO: Actually, order arrays in prevNestedLookup by size of nodes, and iterate on new nodes from largest to smallest.
@@ -1040,70 +750,45 @@ export function mount2Internal(
         //  the user should really add a key to force us to use the optimal match, or change their key, to be the optimal match instead
         //  of whatever they were doing before).
 
-        let originalIndexes: Map<number, number>|undefined;
 
-        if(originalIndexStart === undefined && treeNode.nested.length > 0) {
-            throw new Error(`Impossible. We are freshly creating the node, but it already has nested values?`);
-        }
 
-        if(originalIndexStart !== undefined) {
-            originalIndexes = new Map();
-            let originalCurIndex = originalIndexStart;
-            for(let nest of treeNode.nested) {
-                originalIndexes.set(nest.seqId, originalCurIndex);
-                originalCurIndex += nest.nestedDomNodeCount;
-            }
-        }
+        // Do DOM changes here as well, using LongestSequence to be more efficient, or if delta is available
+        //  just using that to be most efficient
+        //  0) Update tree immediately.
+        //  1) Remove nodes that have been removed
+        //  1.5) Figure out which nodes just need to be changed, and not moved.
+        //  2) Detach nodes that are being moved
+        //  2.5) Recurse on nodes that are being moved, OR being changed
+        //  3) Attach nodes that are being moved, low index to high index.
+        //      - Which noops if we are in a child call and see our parent is detached
+        //  4) Add new nodes
 
-        let prevNestedLookup: {
-            [typeName: string]: RenderTreeChild[]
-        } = {};
-        let prevNested = treeNode.nested;
-        treeNode.nested = [];
-        for(let i = 0; i < prevNested.length; i++) {
-            let nested = prevNested[i];
-            let typeName: string;
-            if(nested.key != null) {
-                typeName = "key__" + nested.key;
-            } else if(nested.type === "domNode") {
-                typeName = "domNode__" + nested.jsxType;
-            } else if(nested.type === "component") {
-                typeName = "component__" + nested.componentType;
-            } else { // keyOnly will have a key, so it should already be handled
-                throw new Error(`Impossible`);
+        let prevNestedLookup: Map<string, { list: RenderTreeChild[]; nextIndex: number; }> = new Map();
+        let prevNested = new Set(treeNode.nested);
+        let nextNested: Set<RenderTreeChild> = new Set();
+        let movedNested: RenderTreeChild[] = [];
+        let prevSiblingNode: RenderTreeChild|undefined;
+
+        
+        let prevIndex = 0;
+        for(let nested of prevNested) {
+            nested.tempPrevIndex = prevIndex++;
+            let typeList = prevNestedLookup.get(nested.typeName);
+            if(!typeList) {
+                typeList = { list: [], nextIndex: 0 };
+                prevNestedLookup.set(nested.typeName, typeList);
             }
-            if(!(typeName in prevNestedLookup)) {
-                prevNestedLookup[typeName] = [];
-            }
-            prevNestedLookup[typeName].push(nested);
+            typeList.list.push(nested);
         }
 
         function takeTreeNode(typeName: string) {
-            if(!(typeName in prevNestedLookup)) {
+            let typeList = prevNestedLookup.get(typeName);
+            if(!typeList) {
                 return undefined;
             }
-            let list = prevNestedLookup[typeName];
-            let result = list.shift();
-            if(list.length === 0) {
-                delete prevNestedLookup[typeName];
-            }
-            return result;
+            return typeList.list[typeList.nextIndex++];
         }
 
-        // TODO: Somewhere around here decide when things should asyncRender, and create an asyncRender holder
-        //  instead of a keyed/component/domNode holder. And then also, on re-renders, try to preserve that
-        //  asyncRender state, making sure the same thing (which is hard to tell and requires some guesses in mapping)
-        //  asyncRenders again.
-        // TODO: Even easier then figure out how to turn on async renders, allow the user to decide when to, and then
-        //  do key based matching on async renders, to preserve async across renders.
-
-        // These may not be leaf nodes, but they have changed
-        let usedNodesIds: Set<number> = new Set();
-
-        let newNested: {
-            newJSX: JSXNode;
-            matchedNode: RenderTreeChild|undefined;
-        }[] = [];
 
         // Expands array, objects and unkeyed fragments, basically anything that is too meaningless to be given a node in the RenderTree.
         //  Also removes unneeded values, such as values where getText(jsx) === "".
@@ -1140,7 +825,7 @@ export function mount2Internal(
                 //  when they lose their key property? (which I guess should never happen, so we don't really need
                 //  to implement it like this).
                 typeName = "key__" + newJSX.key;
-            } else if("type" in newJSX && (!XSSComponentCheck || reactSymbol in newJSX)) {
+            } else if("type" in newJSX && (!context.XSSComponentCheck || reactSymbol in newJSX)) {
                 if(typeof newJSX.type === "string") {
                     typeName = "domNode__" + newJSX.type;
                 } else {
@@ -1165,366 +850,172 @@ export function mount2Internal(
                 return;
             }
 
+            
             let matchedNode = takeTreeNode(typeName);
             if(matchedNode) {
-                newNested.push({
-                    newJSX,
-                    matchedNode,
-                });
-                usedNodesIds.add(matchedNode.seqId);
+                matchedNode.pendingVirtualDom = newJSX;
             } else {
-                newNested.push({
-                    newJSX,
-                    matchedNode: undefined,
-                });
+                matchedNode = createTreeNode(newJSX, treeNode);
             }
+            nextNested.add(matchedNode);
+            matchedNode.prevSiblingNode = prevSiblingNode;
+            prevSiblingNode = matchedNode;
         }
 
         expandShells(newJSX);
 
+        // 0) Update tree immediately.
+        treeNode.nested = Array.from(nextNested);
 
+        // 1) Remove nodes that have been removed
+        for(let prev of prevNested) {
+            if(!nextNested.has(prev)) {
+                removeTreeNode(prev);
+            }
+        }
+
+        // 1.5) Figure out which nodes need to be moved, and not just changed.
         {
-            let prevSiblingNode: RenderTreeChild|null = treeNode.prevSiblingNode;
-            
-            let newCurIndex = newIndexStart;
-            for(let i = 0; i < newNested.length; i++) {
-                let { matchedNode, newJSX } = newNested[i];
-                if(matchedNode) {
-                    matchedNode.prevSiblingNode = prevSiblingNode;
-                    updateTreeNode(
-                        matchedNode,
-                        newJSX,
-                        originalIndexes ? originalIndexes.get(matchedNode.seqId) : undefined,
-                        newCurIndex,
-                    );
-                } else {
-                    matchedNode = createTreeNode(newJSX, treeNode, newCurIndex, prevSiblingNode);
-                }
-                prevSiblingNode = matchedNode;
-                newCurIndex += matchedNode.nestedDomNodeCount;
-                treeNode.nested.push(matchedNode);
-            }
-        }
 
-        // Update first/last dom nodes. This is kind of broken, as we should be doing this after we actually move around our
-        //  nodes... but it works presently because our move should never be looking at these firstDomNode/lastDomNode values?
-        {
-            let nested = treeNode.nested;
-            treeNode.firstDomNode = null;
-            for(let i = 0; i < nested.length; i++) {
-                let nest = nested[i];
-                if(nest.firstDomNode) {
-                    treeNode.firstDomNode = nest.firstDomNode;
-                    break;
+            let newIndex = 0;
+            for(let next of nextNested) {
+                if(prevNested.has(next)) {
+                    next.tempNewIndex = newIndex++;
                 }
             }
 
-            treeNode.lastDomNode = null;
-            for(let i = nested.length - 1; i >= 0; i--) {
-                let nest = nested[i];
-                if(nest.lastDomNode) {
-                    treeNode.lastDomNode = nest.lastDomNode;
-                    break;
-                }
-            }
-        }
+            let movedNestedArr = Array.from(prevNested).filter(x => nextNested.has(x));
 
-        treeNode.nestedDomNodeCount = 0;
-        for(let nested of treeNode.nested) {
-            treeNode.nestedDomNodeCount += nested.nestedDomNodeCount;
-        }
+            let newIndexList = movedNestedArr.map(x => x.tempNewIndex);
 
-
-        if(originalIndexes) {
-            for(let prevNest of prevNested) {
-                if(!usedNodesIds.has(prevNest.seqId)) {
-                    removeTreeNode(prevNest, originalIndexes.get(prevNest.seqId) || 0);
-                }
-            }
-        }
-    }
-
-    //todonext;
-    // Actually... just have updateTreeNode take the transformations as a parameter, and then apply them within the loop,
-    //  moving everything within the loop as well...
-
-    sort(childrenToRemount, x => x.depth);
-    for(let childToRemount of childrenToRemount) {
-        if(childToRemount.seqId in treeNodesUpdated) continue;
-        curTreeNodeTransformation = {
-            rootNode: childToRemount,
-            changes: [],
-        };
-        treeNodeTransformations[childToRemount.seqId] = curTreeNodeTransformation;
-        // originalIndexStart and newIndexStart don't need to be global, as we deal with nodes in isolation anyway.
-        updateTreeNode(childToRemount, childToRemount.pendingAsyncVirtualDom, 0, 0);
-    }
-
-    //mark("mount2_tree", true);
-
-
-    //mark("mount2_transform");
-
-    // The tree is correct. We need to deal with old dom deletion, dom ordering, dom insertion, and rendering children of rendered dom elements.
-
-    for(let key in treeNodeTransformations) {
-        let { changes } = treeNodeTransformations[key];
-        // Our iteration order should ensure there are no overlaps in these transformations, so we can run them in isolation.
-
-        function getDomNodes(node: RenderTreeChild): ChildNode[] {
-            let domNodes: ChildNode[] = [];
-            getDomNodesInternal(node, domNodes);
-            return domNodes;
-            function getDomNodesInternal(node: RenderTreeChild, arrayOutput: ChildNode[]): void {
-                if(node.type === "domNode") {
-                    arrayOutput.push(node.childNode);
-                } else {
-                    for(let nest of node.nested) {
-                        getDomNodesInternal(nest, arrayOutput);
-                    }
-                }
-            }
-        }
-
-        //  2) Delete all unused nodes
-        let deletions = changes.filter(x => x.newIndex === undefined);
-        for(let deleteChange of deletions) {
-            let nodesToDelete = getDomNodes(deleteChange.node);
-            for(let i = 0; i < nodesToDelete.length; i++) {
-                let node = nodesToDelete[i];
-                parentNode.removeChild(node);
-            }
-        }
-
-        let insertions = changes.filter(x => x.originalIndex === undefined) as {
-            node: RenderTreeChild;
-            newIndex: number;
-        }[];
-        let moves = changes.filter(x => x.newIndex !== undefined && x.originalIndex !== undefined) as {
-            node: RenderTreeChild;
-            originalIndex: number;
-            newIndex: number;
-        }[];
-
-
-        for(let i = 0; i < moves.length - 1; i++) {
-            if(moves[i].newIndex >= moves[i + 1].newIndex) {
-                throw new Error(`Impossible, changes should be ordered by newIndex`);
-            }
-        }
-
-        //  3) Order all existing domNodes based on the order outputted from the update RenderTreeChild step
-        // Moves
-        let currentOrder: {
-            newIndex: number;
-            node: RenderTreeChild;
-        }[] = [];
-        function insertNode(change: { newIndex: number; node: RenderTreeChild; }) {
-            
-            let nodesInMove = getDomNodes(change.node);
-
-            let insertIndex = binarySearchMapped(currentOrder, change.newIndex, x => x.newIndex, (a, b) => a - b);
-            if(insertIndex < 0) {
-                insertIndex = ~insertIndex;
-            }
-            if(insertIndex === currentOrder.length) {
-                currentOrder.push(change);
-                for(let nodeToInsert of nodesInMove) {
-                    parentNode.appendChild(nodeToInsert);
-                }
+            //todonext;
+            // LongestSequence is slow. Without it, most of the time is spent in remove and after (the dom manipulation functions), so...
+            //  you know... we need it, but we just need it to run faster...
+            if(newIndexList.length < 10) {
+                // TODO: Be more smart this, as this could be inefficient if our < 10 children are very large.
+                // TODO: Perhaps also add a hardcoded check (maybe in LongestSequence) for newIndexList already being
+                //  in order, in which case longestSequence = newIndexList, and otherSequence = [].
+                movedNested = movedNestedArr;
             } else {
-                /*
-                todonext;
-                // Not correct with sparse changes. It may be the case that node before us in currentOrder is not the node before us in
-                //  the dom (the ones between may not have been changed), so should look before and after, using an array
-                //  of our siblings (which we aren't already using? Maybe it doesn't exist? Although it should...)
-                //  using their firstDomNode/lastDomNode property? Which... reference the prev/next if the node has no dom nodes?
-                todonext;
-                // There was uncertainty about firstDomNode/lastDomNode being updated correctly. So we should check on that,
-                //  because we are really going to need those now...
-                todonext;
-                // So... we should take the virtual tree child array (which again, MUST exist somehow?) and then remove all elements
-                //  that are going to be moved (which might be all elements, we can add a TODO to make the array mutations more
-                //  efficient if a high enough fraction is moved, by remaking the entire array). Then... update the dom first/last
-                //  (which are really prev/next when there are no dom nodes) of any elements which stay WHICH are siblings of elements
-                //  that are moved (we can probably update it when we "remove" elements).
-                todonext;
-                // Hmm... but as we insert, maintaining first/last will be inefficient... There is no way around it, even one insertion
-                //  could require iterating over every element! Fuck....
-
-                todonext;
-                // Okay... maybe reduce firstDomNode/lastDomNode to just... lastDomNode?
-
-                todonext;
-                // Okay, so use after() instead of insertBefore
-                //  Remove all mutated values from the virtual dom, and then insert all moved values back in.
-                //  - But pretend the longest sequence is non-mutated
-                //      - HOWEVER this sequence needs to be consecutive in terms of mutations... which... is hard to explain,
-                //          but basically, if the range (from min to max) of the sequence in prevIndex AND newIndex order is taken,
-                //          all the elements need to be mutated. LongestSequence can detect this... but... I'm not sure if this detection
-                //          can be put into the actual algorithm?
-                //          - ALTHOUGH hmm... this is TOO strict, as gaps might still be okay...
-
-                todonext
-                // OH! ACTUALLY! We might want to rearranging non-mutated elements, sometimes, as sometimes that will be more efficient!
-                //  Ugh... maybe... we just leave our LongestSequence code for when all children are mutated (or all mutations are in order),
-                //  and then when using an array delta just leave it up the creator of the delta to be efficient.
-
-                todonext;
-                // Actually... we only need firstDomNode/last to exist within nested, not across the whole tree, as while we HAVE to support
-                //  large sibling count, large depth is allowed to scale at O(N).
-                //  And then... THIS makes things easier. It means... we could probably create a proper tree...
-
-                todonext;
-                // Okay, then... we just do dom deletions, then insertions in order of final index?
-                //  Oh, right, if we do it in final index order, then it becomes inefficient when an element is moved
-                //  from the start to the end.
-                todonext;
-                // Ugh... it keeps seeming like we will want a tree. But I really don't want to have to create a tree...
-                // Okay... we could... take the longest sequence, and then...
-                // Well, how do we move some elements first, out of final index order?
-                //  I guess we could get the count that wll be moved before each one, and the count that is before, but will be moved
-                //  after, and use that to adjust to get the actual index.
-                //  (And we are just moving around within nested arrays. Yes, our algorithm COULD support more, but we don't have the
-                //      facilities to emit cross virtual tree moves, so... why support applying them?)
-                todonext;
-                // So, if we do get the longest sequence, with order preserves even considering non-moved values, then...
-                //  Hmm... okay, we could... do it via neighbors?
-                todonext;
-                // Oh wait, we just... our current algorithm works, it just needs to be populated with non-moved values.
-                //  - Except... finalIndex! Fuck... finalIndex is messing everything up, because we don't want to have to update
-                //      that for all existing values if one changes...
-                //      - Hmm... maybe... just iterating back until we find an elment that is final... yeah, maybe that is JUST FINE.
-                */
-                
-
-                let currentNodeObj = UnionUndefined(currentOrder[insertIndex]);
-                if(!currentNodeObj) {
-                    debugger;
-                    throw new Error(`insertIndex should always exist in currentOrder, otherwise we don't know where to insert it!`);
+                let { otherSequence } = LongestSequence(newIndexList);
+                for(let i of otherSequence) {
+                    movedNested.push(movedNestedArr[newIndexList[i]]);
                 }
-                currentOrder.splice(insertIndex, 0, change);
-                let afterNode = (
-                    // Either the first dom node of the node after us
-                    currentNodeObj.node.firstDomNode
-                    // Or the first node after it
-                    || getNextDomNode(currentNodeObj.node)
-                );
-
-
-                for(let i = nodesInMove.length - 1; i >= 0; i--) {
-                    let nodeToInsert = nodesInMove[i];
-                    parentNode.insertBefore(nodeToInsert, afterNode);
-                    afterNode = nodeToInsert;
-                }
-            }
-
-
-            // Calculate nextDomNode. We can do this from the sibling of our current lastDomNode, OR
-            //  we can get the prevDomNode from prevSiblingNode and get the sibling from there OR
-            //  if that doesn't work, the dom node after us is just childNodes[0] OR null
-            // Everything in this function operates on the same dom level, this is just doing tree traversal
-            //  of the virtual tree, so this is actually fine.
-            function getNextDomNode(treeNode: RenderTreeChild): Node|null {
-                let nextDomNode: Node|null = null;
-                if(treeNode.lastDomNode) {
-                    nextDomNode = treeNode.lastDomNode.nextSibling;
-                } else {
-                    let prevDomNode: ChildNode|null = null;
-                    {
-                        let { prevSiblingNode } = treeNode;
-                        while(prevSiblingNode) {
-                            if(prevSiblingNode.lastDomNode) {
-                                prevDomNode = prevSiblingNode.lastDomNode;
-                                break;
-                            }
-                            prevSiblingNode = prevSiblingNode.prevSiblingNode;
-                        }
-                    }
-                    if(prevDomNode) {
-                        // If we have no lastDomNode we are empty, so the node after the dom node before us, is after us!
-                        nextDomNode = prevDomNode.nextSibling;
-                    } else {
-                        // If we have no previous node we are empty, and the beginning, so the first node is after us.
-                        nextDomNode = parentNode.childNodes[0] || null;
-                    }
-                }
-                return nextDomNode;
             }
         }
-        if(moves.length > 0) {
-            // Find the longest sequence of changes, and insert those into currentOrder, not needing to move
-            //  around the dom, as they are already in order.
-            let movesByOriginalIndex = moves.slice();
-            sort(movesByOriginalIndex, x => x.originalIndex);
 
-            let { longestSequence, otherSequence } = LongestSequence(movesByOriginalIndex.map(x => x.newIndex));
-            let movesByNewIndex = keyBy(moves, x => x.newIndex.toString());
-            let movesLongestSequence = longestSequence.map(x => movesByNewIndex[x]);
-            let movesOther = otherSequence.map(x => movesByNewIndex[x]);
-
-            for(let move of movesLongestSequence) {
-                //todonext;
-                // Wait, isn't this bugged? What if the currentOrder is sparse?
-                // TODO: We should call insertNode for all of them, BUT, if the previous node in the dom has already been
-                //  put in currentOrder, and is supposed to be the index directly before us... then just noop.
-                insertIntoListMapped(currentOrder, move, x => x.newIndex, (a, b) => a - b);
+        // 2) Detach nodes that are being moved
+        {
+            for(let move of movedNested) {
+                detachTreeNodeFromDom(move);
             }
-            
-            // Start from the end, that way we always have an element to insert before OR
-            //  we are the last element. Actually... this order might not matter...
-            //sort(movesOther, x => -x.newIndex);
-            for(let move of movesOther) {
-                insertNode(move);
+        }
+
+        // 2.5) Update next nodes
+        {
+            for(let next of nextNested) {
+                updateTreeNode(next);
+            }
+        }
+
+        //  3) Attach nodes that are being moved, low index to high index.
+        //      - Which noops if we are in a child call and see our parent is detached
+        {
+            for(let move of movedNested) {
+                attachTreeNodeToDom(parentNode, move);
             }
         }
 
         //  4) Add new nodes
-        for(let insertion of insertions) {
-            insertNode(insertion);
+        {
+            for(let next of nextNested) {
+                if(!prevNested.has(next)) {
+                    attachTreeNodeToDom(parentNode, next);
+                }
+            }
         }
     }
+}
 
-    //mark("mount2_transform", true);
-
-    //  5) Take the children property of the jsx of all the elements we created and call Mount2 with that property as the new jsx
-
-    for(let removedTreeLeaf of removedNestedTreeLeafs) {
-        // TODO: We only need to call this so onRemoveComponent gets called, so we should realy add a special path to allow this,
-        //  that doesn't do all the extra work.
-        mount2Internal(removedTreeLeaf.childNode, context,
-            {
-                rootJSX: null,
-                treeNodes: {},
-                parentComponent: undefined,
-            },
-            XSSComponentCheck
-        );
-    }
-
-    for(let nestedTreeLeaf of addedOrMovedNestedTreeLeafs) {
-        let nestedJSX = nestedTreeLeaf.jsx;
-        if(isPrimitive(nestedJSX)) {
-            throw new Error(`Impossible, should only be added to addedOrMovedNestedTreeLeafs if it is from an object.`);
-        }
-
-        let childMountContext = nestedTreeLeaf.childNode[mountContextSymbol];
-        if(!childMountContext) {
-            console.error(`Impossible, child has no mount context?`);
+// TODO: When running this in a loop we should keep track of some of the previous searches
+//  for dom nodes to make searches for the tree node directly after faster.
+/** Gets the last dom node in the given tree, OR, the first dom node before it.
+ *      - So... .after(newNode) will insert a dom node after the given tree.
+ *      - Also, only returns dom nodes that are attachedToDOM. */
+function getTrailingDomNode(tree: RenderTreeChild|undefined): ChildNode|undefined {
+    while(true) {
+        if(!tree) return undefined;
+        if(!tree.attachedToDOM) {
+            tree = tree.prevSiblingNode;
             continue;
         }
-        
-        mount2Internal(
-            nestedTreeLeaf.childNode,
-            childMountContext,
-            {
-                rootJSX: nestedJSX.props.children,
-                treeNodes: {},
-                parentComponent: nestedTreeLeaf.component
-            },
-            XSSComponentCheck
-        );
+        if(tree.type === "domNode") {
+            return tree.childNode;
+        }
+        for(let i = tree.nested.length - 1; i >= 0; i--) {
+            let child = getTrailingDomNode(tree.nested[i]);
+            if(child) {
+                return child;
+            }
+        }
+        let prevSiblingNode = tree.prevSiblingNode;
+        if(!prevSiblingNode) {
+            tree = tree.parentTreeNode;
+        } else {
+            tree = prevSiblingNode;
+        }
     }
+}
 
-    //mark("mount2_transform", true);
+
+function attachTreeNodeToDom(parentNode: ChildNode, tree: RenderTreeChild): void {
+    if(tree.parentTreeNode && !tree.parentTreeNode.attachedToDOM) {
+        // We can't attach if our parent isn't attached.
+        return;
+    }
+    let prevDomNode = getTrailingDomNode(tree);
+    attachRecurse(tree);
+    function attachRecurse(tree: RenderTreeChild) {
+        if(tree.attachedToDOM) throw new Error(`Internal error, tried to attach to dom twice.`);
+        tree.attachedToDOM = true;
+        if(tree.type !== "domNode") {
+            for(let nested of tree.nested) {
+                attachRecurse(nested);
+            }
+            return;
+        }
+        if(prevDomNode) {
+            prevDomNode.after(tree.childNode);
+        } else {
+            parentNode.insertBefore(tree.childNode, parentNode.childNodes[0] || null);
+        }
+        prevDomNode = tree.childNode;
+    }
+}
+
+function detachTreeNodeFromDom(tree: RenderTreeChild): void {
+    detachRecurse(tree);
+    function detachRecurse(tree: RenderTreeChild) {
+        if(!tree.attachedToDOM) throw new Error(`Internal error, tried to deattach from dom twice.`);
+        tree.attachedToDOM = false;
+        if(tree.type !== "domNode") {
+            for(let i = tree.nested.length - 1; i >= 0; i--) {
+                detachRecurse(tree.nested[i]);
+            }
+            return;
+        }
+        tree.childNode.remove();
+    }
+}
+
+function setTypeName(node: RenderTreeChild) {
+    if(node.key != null) {
+        node.typeName = "key__" + node.key;
+    } else if(node.type === "domNode") {
+        node.typeName = "domNode__" + node.jsxType;
+    } else if(node.type === "component") {
+        node.typeName = "component__" + node.componentType;
+    } else { // keyOnly will have a key, so it should already be handled
+        throw new Error(`Impossible`);
+    }
 }
