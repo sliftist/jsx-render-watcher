@@ -60,24 +60,28 @@ export function GetCurLookupDelta<Value>(lookup: { [key: string]: Value } & { [l
 
 
 export const arrayDelta = Symbol.for("arrayDelta");
-// TODO: Add a new operation that moves elements within an array, because our deltas can support it, and our mounting (will) support it,
-//  it is just that there is no single operation to do it with arrays, because it had no use before...
-// If a value is removed, newIndex === undefined, added, prevIndex === undefined, and if it is moved both indexes are set.
-//  For mutations both indexes may stay the same.
-//  - We only count moves as say, skipping over a value. When a splice happens and the indexs of all values above the deleted element
-//      change, we don't trigger a delta of all those. This IS NOT a delta of the indexes, this represents a delta of the values,
-//      or order, with prevIndex/newIndex existing for convenience.
-//  - prevIndex refers to the last DeltaContext, newIndex the most recent, not the indexes before/after the change that triggered
-//      their addition to the delta.
-//  The general way to apply these mutations (when order matters), is to remove all deleted and changed elements, and
-//      then re-add everything that is moved, in the newIndex order, using newArray[newIndex-1] as a reference point.
-//  If order isn't important, the changes can be applied even more easily.
-export type ArrayDelta<Value> = Map<Value, {
-    prevIndex: number|undefined;
-    newIndex: number|undefined;
-}>;
+export type ArrayDeltaObj<Value> = Value[] & { [arrayDelta]?: () => ArrayDelta };
 
-export function GetCurArrayDelta<Value>(arr: Value[] & { [arrayDelta]?: () => ArrayDelta<Value> }): ArrayDelta<Value> {
+export type ArrayDelta = {
+    // Delta must be applied in this order: removes, insert
+    //  The aux stack is a stack used during the delta, to describe moves. It isn't needed if moves aren't important,
+    //  as moves can equally just be interpretted as a remove followed by an insertion.
+
+    // Indexes of removes ordered from high to low, so removals don't break their own indexes
+    //  If the number is < 0, it becomes the ~ of the value, and should push to the aux stack.
+    removes: number[];
+    // Insert. If the number < 0, it becomes ~ of the value.
+    //  The values are sorted low to high, and are the indexes in the final array. The array itself
+    //  is already changed, so the values can be obtained simply from reading the final array.
+    //  If the value is < 0, then it pops the auxOrder, and takes the value from the aux stack at the index
+    //  of the popped value, and that value is the value inserted.
+    //  This value is equal to the value in the final array, however the fact that is came from the array
+    //  in the first place can be used as an optimization.
+    inserts: number[];
+    auxOrder: number[];
+};
+
+export function GetCurArrayDelta<Value>(arr: ArrayDeltaObj<Value>): ArrayDelta {
     let delta = arr[arrayDelta];
     if(delta) {
         return delta();
@@ -99,68 +103,117 @@ export function GetCurArrayDelta<Value>(arr: Value[] & { [arrayDelta]?: () => Ar
 
     let { prevArraySlice } = shimState;
 
-    let newArrayIndexes = new Map<Value, number[]>();
+    let newArray = arr;
+
+
+    let movedPrevIndexes: Set<number> = new Set();
+    let movedNewIndexes: Set<number> = new Set();
+
+    let persistedPrevIndexes: Set<number> = new Set();
+    let persistedNewIndexes: Set<number> = new Set();
+
+    // from newIndex to stack index
+    let auxStack: Map<number, number> = new Map();
+
+    let auxOrder: number[] = [];
+
     {
+        let newArrayIndexes = new Map<Value, { list: number[]; nextIndex: number; }>();
         for(let i = 0; i < arr.length; i++) {
             let newValue = arr[i];
             let indexes = newArrayIndexes.get(newValue);
             if(!indexes) {
-                indexes = [];
+                indexes = { list: [], nextIndex: 0 };
                 newArrayIndexes.set(newValue, indexes);
             }
-            indexes.push(i);
+            indexes.list.push(i);
         }
-    }
 
-    let deletions: { newIndex: undefined; prevIndex: number; value: Value }[] = [];
-    let moves: { newIndex: number; prevIndex: number; value: Value }[] = [];
-    let adds: { newIndex: number; prevIndex: undefined; value: Value }[] = [];
+        let moveNewIndexesArr: number[] = [];
+        let movePrevIndexesArr: number[] = [];
 
-    // Find all moves and deletions
-    for(let i = 0; i < prevArraySlice.length; i++) {
-        let prevValue = prevArraySlice[i];
-        let newIndexes = newArrayIndexes.get(prevValue);
-        if(newIndexes) {
-            let newIndex = newIndexes.shift();
-            if(newIndex !== undefined) {
-                moves.push({ newIndex, prevIndex: i, value: prevValue });
-                continue;
+        let stackIndex = 0;
+        for(let i = 0; i < prevArraySlice.length; i++) {
+            let prevValue = prevArraySlice[i];
+            let newIndexes = newArrayIndexes.get(prevValue);
+            if(newIndexes) {
+                let newIndex = newIndexes.list[newIndexes.nextIndex++];
+                if(newIndex !== undefined) {
+                    moveNewIndexesArr.push(newIndex);
+                    movePrevIndexesArr.push(i);
+                    continue;
+                }
             }
         }
-        deletions.push({ newIndex: undefined, prevIndex: i, value: prevValue });
-    }
 
-    for(let [value, indexes] of newArrayIndexes) {
-        while(true) {
-            let newIndex = indexes.shift();
-            if(newIndex === undefined) break;
-            adds.push({ newIndex, prevIndex: undefined, value });
-        }
-    }
-
-    // Takes the longest sequence of elements that are persisted, and in the same order, and don't apply them.
-    //  This is because if we delete all the deleted elements, make the remaining in the correct order
-    //  (relative to the non-changed elements), and insert any new ones, the final array will be correct, without
-    //  touching the longest sequence.
-    {
+        // Takes the longest sequence of elements that are persisted, and in the same order, and don't apply them.
+        //  This is because if we delete all the deleted elements, make the remaining in the correct order
+        //  (relative to the non-changed elements), and insert any new ones, the final array will be correct, without
+        //  touching the longest sequence.
+    
         // Moves is already ascending by prevIndex, so the value should be newIndex
-        let { otherSequence } = LongestSequence(moves.map(x => x.newIndex));
-        let newMovesOrder: typeof moves = [];
-        for(let moveIndex of otherSequence) {
-            newMovesOrder.push(moves[moveIndex]);
+        let { otherSequence } = LongestSequence(moveNewIndexesArr);
+        for(let i = 0; i < otherSequence.length; i++) {
+            let moveIndex = otherSequence[i];
+            let prev = movePrevIndexesArr[moveIndex];
+            let next = moveNewIndexesArr[moveIndex];
+            movedPrevIndexes.add(prev);
+            movedNewIndexes.add(next);
         }
-        moves = newMovesOrder;
+
+        for(let i = 0; i < movePrevIndexesArr.length; i++) {
+            let prevIndex = movePrevIndexesArr[i];
+            let newIndex = moveNewIndexesArr[i];
+            if(!movedPrevIndexes.has(prevIndex)) {
+                persistedPrevIndexes.add(prevIndex);
+                persistedNewIndexes.add(newIndex);
+            } else {
+                auxStack.set(newIndex, stackIndex++);
+            }
+        }
     }
 
 
-    let changes: ArrayDelta<Value> = new Map();
-    function addChange(obj: { newIndex: number|undefined; prevIndex: number|undefined; value: Value }) {
-        changes.set(obj.value, { prevIndex: obj.prevIndex, newIndex: obj.newIndex });
+    let removes: number[] = [];
+    //let moves: { newIndex: number; prevIndex: number; value: Value }[] = [];
+    let inserts: number[] = [];
+
+    // Find all moves and deletions, by going through the original array and looking in the
+    //  new array structure
+    for(let prevIndex = prevArraySlice.length - 1; prevIndex >= 0; prevIndex--) {
+        if(movedPrevIndexes.has(prevIndex)) {
+            removes.push(~prevIndex);
+        } else if (persistedPrevIndexes.has(prevIndex)) {
+
+        } else {
+            removes.push(prevIndex);
+        }
     }
-    deletions.forEach(addChange);
-    moves.forEach(addChange);
-    adds.forEach(addChange);
-    return changes;
+
+    // Go through all the remaining values in the new array structure. All of the remaining values
+    //  are insertions.
+    for(let newIndex = 0; newIndex < newArray.length; newIndex++) {
+        if(movedNewIndexes.has(newIndex)) {
+            inserts.push(~newIndex);
+            let auxStackIndex = auxStack.get(newIndex);
+            if(auxStackIndex === undefined) {
+                throw new Error(`Internal errror, auxStack messed up`);
+            }
+            auxOrder.push(auxStackIndex);
+        } else if (persistedNewIndexes.has(newIndex)) {
+
+        } else {
+            inserts.push(newIndex);
+        }
+    }
+
+    shimState.prevArraySlice = arr.slice();
+
+    return {
+        removes,
+        inserts,
+        auxOrder,
+    };
 }
 
 

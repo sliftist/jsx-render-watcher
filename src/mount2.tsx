@@ -12,12 +12,13 @@
 
 import { UnionUndefined, isPrimitive, isArray } from "./lib/type";
 
-import { insertIntoListMapped, binarySearchMapped, sort } from "./lib/algorithms";
+import { insertIntoListMapped, binarySearchMapped, sort, unreachable } from "./lib/algorithms";
 
 import "./lib/listExtensions_g";
 import { keyBy, isShallowEqual } from "./lib/misc";
 import { LongestSequence } from "./lib/longestSequence";
 import { setAccessor } from "./lib/preact-dom";
+import { arrayDelta, ArrayDeltaObj } from "./delta";
 
 export const mountContextSymbol = Symbol("mountContextSymbol");
 export const mountTree = Symbol("mountTree");
@@ -168,12 +169,18 @@ type RenderTreeChildComponent = RenderTreeChildBase & {
     jsx: JSXNode;
 
     nested: RenderTreeChild[];
+    /** If true, it means that when rendered the jsx had to be flattened from a NESTED array, pure component,
+     *      or key lookup object. Which means the jsx array (or single element) isn't parallel with nested,
+     *      and requires expansion to map between the jsx and child trees.
+     */
+    jsxWasFlattened: boolean;
 };
 type RenderTreeChildKeyOnly = RenderTreeChildBase & {
     type: "keyOnly";
     key: string;
 
     nested: RenderTreeChild[];
+    jsxWasFlattened: boolean;
 };
 
 type RenderTreeChild = (
@@ -297,7 +304,9 @@ function createDomChildrenTreeNode(
 
         parentTreeNode: undefined,
 
-        context
+        context,
+
+        jsxWasFlattened: false
     };
 }
 
@@ -539,6 +548,8 @@ function mount2Tree(
                             parentTreeNode: parent,
                             context,
                             nested: [],
+
+                            jsxWasFlattened: false
                         };
 
                         return createdNode;
@@ -582,7 +593,9 @@ function mount2Tree(
 
                     parentTreeNode: parent,
 
-                    context
+                    context,
+
+                    jsxWasFlattened: false
                 };
 
                 component[componentInstanceStateSymbol].treeNode = createdNode;
@@ -608,8 +621,8 @@ function mount2Tree(
         if(treeNode.type === "domNode") {
             if(!isPrimitive(treeNode.jsx)) {
                 // Recurses through child nodes, so their call removeTreeNode, which calls the important onRemoveComponent callback.
-                treeNode.pendingVirtualDom = null;
                 if(treeNode.childTree) {
+                    treeNode.childTree.pendingVirtualDom = null;
                     mount2Tree(treeNode.childTree, treeNode.childNode);
                 }
             }
@@ -733,11 +746,12 @@ function mount2Tree(
             throw new Error(`Unrecognized type ${(treeNode as any).type}`);
         }
     }
+    
     function reconcileTree(
         treeNode: RenderTreeChild,
         newJSX: JSXNode | undefined
     ) {
-        if(treeNode.type === "domNode") throw new Error(`Outer code filters this out.`);
+        if(treeNode.type === "domNode") throw new Error(`Internal error, outer code filters this out.`);
         // TODO: Actually, order arrays in prevNestedLookup by size of nodes, and iterate on new nodes from largest to smallest.
         //  This allows for much better component rearrangement performance, allowing complex components that may be large or small
         //  to be moved around and correctly matched more frequently.
@@ -763,176 +777,303 @@ function mount2Tree(
         //      - Which noops if we are in a child call and see our parent is detached
         //  4) Add new nodes
 
-        let prevNestedLookup: Map<string, { list: RenderTreeChild[]; nextIndex: number; }> = new Map();
-        let prevNested = new Set(treeNode.nested);
-        let nextNested: Set<RenderTreeChild> = new Set();
+
+        let removedNodes: RenderTreeChild[] = [];
         let movedNested: RenderTreeChild[] = [];
-        let prevSiblingNode: RenderTreeChild|undefined;
+        // May includes nodes in movedNested (and probably will include all nodes in movedNested)
+        //  Will also include all nodes in newNested, however the two arrays makes sense, that way changes
+        //  can be applied in order (if we removed the newNested nodes, the nested change calls would have to batch
+        //  change and new calls separately.)
+        let changedNested: RenderTreeChild[] = [];
+        let newNested: RenderTreeChild[] = [];
 
-        
-        let prevIndex = 0;
-        for(let nested of prevNested) {
-            nested.tempPrevIndex = prevIndex++;
-            let typeList = prevNestedLookup.get(nested.typeName);
-            if(!typeList) {
-                typeList = { list: [], nextIndex: 0 };
-                prevNestedLookup.set(nested.typeName, typeList);
+        // flattenReconcilation updates .nested, and then populates the above change arrays, to indicate how the dom should
+        //  be updated (and also which children should have a recursive updateTreeNode call).
+
+        flattenReconcilation(newJSX);
+        function flattenReconcilation(
+            newJSX: JSXNode
+        ): void {
+            if(treeNode.type === "domNode") throw new Error(`Internal error, outer code filters this out.`);
+
+            if(getDeltaFromArray()) {
+                return;
             }
-            typeList.list.push(nested);
-        }
+            function getDeltaFromArray() {
+                if(treeNode.type === "domNode") throw new Error(`Internal error, outer code filters this out.`);
 
-        function takeTreeNode(typeName: string) {
-            let typeList = prevNestedLookup.get(typeName);
-            if(!typeList) {
-                return undefined;
-            }
-            return typeList.list[typeList.nextIndex++];
-        }
-
-
-        // Expands array, objects and unkeyed fragments, basically anything that is too meaningless to be given a node in the RenderTree.
-        //  Also removes unneeded values, such as values where getText(jsx) === "".
-        function expandShells(newJSX: JSXNode, forcedKey?: string) {
-            // If it is terminal get a typeName and try to match it with prevNestedLookup,
-            //  making a node if we can't find a match.
-            // Otherwise call iterateJSX on all parts.
-            // And then... I guess if we match we call updateTreeNode recursively.
-            // And if we don't... we should make a createTreeNode fnc and then call that (recursively)?
-
-            let isPrimitiveValue = isPrimitive(newJSX);
-            //let isPrimitiveValue = !(newJSX && (isArray(newJSX) || (newJSX as any)[ReactOverride.IsDefinitelyACreateElementAndNotAnXSSAttack]));
-            if(isPrimitiveValue) {
-                newJSX = getText(newJSX);
-                if(newJSX === "") {
+                if(treeNode.jsxWasFlattened) {
                     return;
                 }
+                if(!Array.isArray(newJSX)) {
+                    return;
+                }
+
+                let newJSXTyped: ArrayDeltaObj<JSXNode> = newJSX;
+                let deltaFnc = newJSXTyped[arrayDelta];
+                if(deltaFnc) {
+                    let deltaObj = deltaFnc();
+                    // TODO: Handle flattening in our delta array code. This is difficult, and maybe require making a tree to keep
+                    //  track of indexes, but... it is probably worth it, because only rerendering a delta (if it is provided) is
+                    //  very efficient.
+
+                    // Find cases where the newJSX requires flattening. We can't handle flattening in our delta array code.
+                    for(let insertIndex of deltaObj.inserts) {
+                        if(insertIndex < 0) insertIndex = ~insertIndex;
+                        let newChildJSX = newJSX[insertIndex];
+                        if(isPrimitive(newChildJSX)) {
+                            // primitive
+                        } else if("type" in newChildJSX && typeof newChildJSX.type === "function" && "render" in newChildJSX.type.prototype) {
+                            // component
+                        } else if("type" in newChildJSX && typeof newChildJSX.type === "string" && (!context.XSSComponentCheck || reactSymbol in newChildJSX)) {
+                            // dom node
+                        } else if("key" in newChildJSX && newChildJSX.key != null) {
+                            // keyed node
+                        } else {
+                            treeNode.jsxWasFlattened = true;
+                            return;
+                        }
+                    }
+                
+
+                    let arr = treeNode.nested;
+                    let moveStack: (RenderTreeChild|undefined)[] = [];
+
+                    for(let removeIndex of deltaObj.removes) {
+                        if(removeIndex < 0) {
+                            removeIndex = ~removeIndex;
+                            moveStack.push(arr[removeIndex]);
+                            // NOTE: We add to moveNested later, when we actually use it.
+                        } else {
+                            removedNodes.push(arr[removeIndex]);
+                        }
+                        arr.splice(removeIndex, 1);
+                    }
+
+                    for(let insertIndex of deltaObj.inserts) {
+                        let insertNode;
+                        if(insertIndex < 0) {
+                            insertIndex = ~insertIndex;
+                            let auxOrder = deltaObj.auxOrder.pop();
+                            if(auxOrder === undefined) throw new Error(`The delta insertions uses more values than the auxOrder can provide. This means the delta is invalid.`)
+                            insertNode = moveStack[auxOrder];
+                            if(insertNode === undefined) {
+                                throw new Error(`Child tree has been moved into two locations simultaneously. This isn't necessarily invalid, but we don't support it, and currently don't intentionally generate it, so it is likely a bug.`);
+                            }
+                            moveStack[auxOrder] = undefined;
+                            // NOTE: We don't need to add to changeNested here! Because we aren't "matching" with a "compatible" node,
+                            //  this is literally the same value, so it only needs to be moved, it doesn't need to be re-rendered.
+                            movedNested.push(insertNode);
+                        } else {
+                            let newJSXChild = newJSX[insertIndex];
+                            insertNode = createTreeNode(newJSXChild, treeNode);
+                            newNested.push(insertNode);
+                            changedNested.push(insertNode);
+                        }
+                        insertNode.prevSiblingNode = arr[insertIndex - 1];
+                        let next = UnionUndefined(arr[insertIndex]);
+                        if(next) {
+                            next.prevSiblingNode = insertNode;
+                        }
+                        arr.splice(insertIndex, 0, insertNode);
+                    }
+                    if(deltaObj.auxOrder.length > 0) {
+                        throw new Error(`Values specified as moved, but not used. This means the delta is invalid.`);
+                    }
+
+                    return true;
+                }
             }
 
-            let typeName: string;
-            if(forcedKey !== undefined) {
-                typeName = "key__" + forcedKey;
-            } else if(isArray(newJSX)) {
-                // Arrays
-                for(let newJSXChild of newJSX) {
-                    expandShells(newJSXChild);
+
+            let prevNestedLookup: Map<string, { list: RenderTreeChild[]; nextIndex: number; }> = new Map();
+            let prevNested = new Set(treeNode.nested);
+            let nextNested: Set<RenderTreeChild> = new Set();
+
+            let prevIndex = 0;
+            for(let nested of prevNested) {
+                nested.tempPrevIndex = prevIndex++;
+                let typeList = prevNestedLookup.get(nested.typeName);
+                if(!typeList) {
+                    typeList = { list: [], nextIndex: 0 };
+                    prevNestedLookup.set(nested.typeName, typeList);
                 }
-                return;
-            } else if(isPrimitive(newJSX)) {
-                typeName = "domNode__primitive";
-            } else if("key" in newJSX && newJSX.key != null) {
-                // TODO: If we don't match the key, but it isn't a component, we could try just matching the type.
-                //  As we do global DOM matching later this is only for efficiency state, or for matching elements
-                //  when they lose their key property? (which I guess should never happen, so we don't really need
-                //  to implement it like this).
-                typeName = "key__" + newJSX.key;
-            } else if("type" in newJSX && (!context.XSSComponentCheck || reactSymbol in newJSX)) {
-                if(typeof newJSX.type === "string") {
-                    typeName = "domNode__" + newJSX.type;
-                } else {
-                    if(typeof newJSX.type !== "function") throw new Error(`Invalid type, not a string or function`);
-                    if(!("render" in newJSX.type.prototype)) {
-                        // Pure component
-                        let children = newJSX.type(newJSX.props);
-                        expandShells(children);
+                typeList.list.push(nested);
+            }
+
+            function takeTreeNode(typeName: string) {
+                let typeList = prevNestedLookup.get(typeName);
+                if(!typeList) {
+                    return undefined;
+                }
+                return typeList.list[typeList.nextIndex++];
+            }
+
+            expandShells(newJSX, true);
+            findDeltaFromExpanded();
+
+            // Expands array, objects and unkeyed fragments, basically anything that is too meaningless to be given a node in the RenderTree.
+            //  Also removes unneeded values, such as values where getText(jsx) === "".
+            function expandShells(newJSX: JSXNode, isRootExpand: boolean, forcedKey?: string) {
+                if(treeNode.type === "domNode") throw new Error(`Internal error, outer code filters this out.`);
+
+                // If it is terminal get a typeName and try to match it with prevNestedLookup,
+                //  making a node if we can't find a match.
+                // Otherwise call iterateJSX on all parts.
+                // And then... I guess if we match we call updateTreeNode recursively.
+                // And if we don't... we should make a createTreeNode fnc and then call that (recursively)?
+
+                let isPrimitiveValue = isPrimitive(newJSX);
+                //let isPrimitiveValue = !(newJSX && (isArray(newJSX) || (newJSX as any)[ReactOverride.IsDefinitelyACreateElementAndNotAnXSSAttack]));
+                if(isPrimitiveValue) {
+                    newJSX = getText(newJSX);
+                    if(newJSX === "") {
                         return;
-                    } else {
-                        // TODO: Actually... this is dangerous, just because two classes have the same name
-                        //  don't mean they are the same class!
-                        typeName = "component__" + newJSX.type.name;
                     }
                 }
-            } else {
-                // Must be a raw object
-                let keys = Object.keys(newJSX);
-                for(let key of keys) {
-                    expandShells((newJSX as any)[key], key);
+
+                let typeName: string;
+                if(forcedKey !== undefined) {
+                    typeName = "key__" + forcedKey;
+                } else if(isArray(newJSX)) {
+                    // Arrays
+                    for(let newJSXChild of newJSX) {
+                        expandShells(newJSXChild, false);
+                    }
+                    if(!isRootExpand) {
+                        treeNode.jsxWasFlattened = true;
+                    }
+                    return;
+                } else if(isPrimitive(newJSX)) {
+                    typeName = "domNode__primitive";
+                // TODO: We should check for key in another way, so it doesn't conflict with raw objects.
+                } else if("key" in newJSX && newJSX.key != null) {
+                    // TODO: If we don't match the key, but it isn't a component, we could try just matching the type.
+                    //  As we do global DOM matching later this is only for efficiency state, or for matching elements
+                    //  when they lose their key property? (which I guess should never happen, so we don't really need
+                    //  to implement it like this).
+                    typeName = "key__" + newJSX.key;
+                } else if("type" in newJSX && (!context.XSSComponentCheck || reactSymbol in newJSX)) {
+                    if(typeof newJSX.type === "string") {
+                        typeName = "domNode__" + newJSX.type;
+                    } else {
+                        // TODO: Actually, it should be a raw object, with a key of type. We should just fall through to the raw object case...
+                        if(typeof newJSX.type !== "function") throw new Error(`Invalid type, not a string or function`);
+                        if(!("render" in newJSX.type.prototype)) {
+                            // Pure component
+                            let children = newJSX.type(newJSX.props);
+                            expandShells(children, false);
+                            treeNode.jsxWasFlattened = true;
+                            return;
+                        } else {
+                            // TODO: Actually... this is dangerous, just because two classes have the same name
+                            //  don't mean they are the same class!
+                            typeName = "component__" + newJSX.type.name;
+                        }
+                    }
+                } else {
+                    // Must be a raw object
+                    let keys = Object.keys(newJSX);
+                    for(let key of keys) {
+                        expandShells((newJSX as any)[key], false, key);
+                    }
+                    treeNode.jsxWasFlattened = true;
+                    return;
                 }
-                return;
+
+                
+                let matchedNode = takeTreeNode(typeName);
+                if(matchedNode) {
+                    matchedNode.pendingVirtualDom = newJSX;
+                } else {
+                    matchedNode = createTreeNode(newJSX, treeNode);
+                }
+                nextNested.add(matchedNode);
             }
 
-            
-            let matchedNode = takeTreeNode(typeName);
-            if(matchedNode) {
-                matchedNode.pendingVirtualDom = newJSX;
-            } else {
-                matchedNode = createTreeNode(newJSX, treeNode);
+            function findDeltaFromExpanded() {
+                if(treeNode.type === "domNode") throw new Error(`Internal error, outer code filters this out.`);
+
+
+                // Removes
+                for(let prev of prevNested) {
+                    if(!nextNested.has(prev)) {
+                        removedNodes.push(prev);
+                    }
+                }
+
+                // Moves
+                {
+                    let newIndex = 0;
+                    for(let next of nextNested) {
+                        if(prevNested.has(next)) {
+                            next.tempNewIndex = newIndex++;
+                        }
+                    }
+        
+                    let movedNestedArr = Array.from(prevNested).filter(x => nextNested.has(x));
+               
+                    if(movedNestedArr.length < 4) {
+                        // TODO: Be more smart this, as this could be inefficient if our < 10 children are very large.
+                        // TODO: Perhaps also add a hardcoded check (maybe in LongestSequence) for newIndexList already being
+                        //  in order, in which case longestSequence = newIndexList, and otherSequence = [].
+                        for(let moved of movedNestedArr) {
+                            movedNested.push(moved);
+                        }
+                    } else {
+                        let { otherSequence } = LongestSequence(movedNestedArr.map(x => x.tempNewIndex));
+                        for(let i of otherSequence) {
+                            movedNested.push(movedNestedArr[i]);
+                        }
+                    }
+                }
+
+                // Changes, update nested
+                {
+                    treeNode.nested = [];
+                    let lastNext: RenderTreeChild|undefined = undefined;
+                    for(let nextNode of nextNested) {
+                        changedNested.push(nextNode);
+                        treeNode.nested.push(nextNode)
+
+                        nextNode.prevSiblingNode = lastNext;
+                        lastNext = nextNode;
+                    }
+                }
+
+                // Adds
+                for(let next of nextNested) {
+                    if(!prevNested.has(next)) {
+                        newNested.push(next);
+                    }
+                }
             }
-            nextNested.add(matchedNode);
-            matchedNode.prevSiblingNode = prevSiblingNode;
-            prevSiblingNode = matchedNode;
         }
-
-        expandShells(newJSX);
-
-        // 0) Update tree immediately.
-        treeNode.nested = Array.from(nextNested);
-
+        
         // 1) Remove nodes that have been removed
-        for(let prev of prevNested) {
-            if(!nextNested.has(prev)) {
-                removeTreeNode(prev);
-            }
-        }
-
-        // 1.5) Figure out which nodes need to be moved, and not just changed.
-        {
-
-            let newIndex = 0;
-            for(let next of nextNested) {
-                if(prevNested.has(next)) {
-                    next.tempNewIndex = newIndex++;
-                }
-            }
-
-            let movedNestedArr = Array.from(prevNested).filter(x => nextNested.has(x));
-
-            let newIndexList = movedNestedArr.map(x => x.tempNewIndex);
-
-            //todonext;
-            // LongestSequence is slow. Without it, most of the time is spent in remove and after (the dom manipulation functions), so...
-            //  you know... we need it, but we just need it to run faster...
-            if(newIndexList.length < 10) {
-                // TODO: Be more smart this, as this could be inefficient if our < 10 children are very large.
-                // TODO: Perhaps also add a hardcoded check (maybe in LongestSequence) for newIndexList already being
-                //  in order, in which case longestSequence = newIndexList, and otherSequence = [].
-                movedNested = movedNestedArr;
-            } else {
-                let { otherSequence } = LongestSequence(newIndexList);
-                for(let i of otherSequence) {
-                    movedNested.push(movedNestedArr[newIndexList[i]]);
-                }
-            }
+        for(let removedNode of removedNodes) {
+            removeTreeNode(removedNode);
         }
 
         // 2) Detach nodes that are being moved
-        {
-            for(let move of movedNested) {
-                detachTreeNodeFromDom(move);
-            }
+        for(let move of movedNested) {
+            detachTreeNodeFromDom(move);
         }
 
         // 2.5) Update next nodes
-        {
-            for(let next of nextNested) {
-                updateTreeNode(next);
-            }
+        for(let next of changedNested) {
+            updateTreeNode(next);
         }
 
         //  3) Attach nodes that are being moved, low index to high index.
         //      - Which noops if we are in a child call and see our parent is detached
-        {
-            for(let move of movedNested) {
-                attachTreeNodeToDom(parentNode, move);
-            }
+        for(let move of movedNested) {
+            attachTreeNodeToDom(parentNode, move);
         }
 
         //  4) Add new nodes
-        {
-            for(let next of nextNested) {
-                if(!prevNested.has(next)) {
-                    attachTreeNodeToDom(parentNode, next);
-                }
-            }
+        for(let newNode of newNested) {
+            attachTreeNodeToDom(parentNode, newNode);
         }
     }
 }

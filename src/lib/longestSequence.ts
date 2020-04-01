@@ -1,5 +1,10 @@
 import { binarySearch } from "./algorithms";
 
+// TODO: Rewrite this to use some kind of sorting algorithm, which outputs the operations needed to sort the array starting in
+//  previous order, to an array in the new order. This will allow many more cases than our current algorithm, and (if the sorting
+//  algorithm is good), should always result in optimal dom transformations. Also, a sorting algorithm should be very fast
+//  (depending on the algorithm choosen), hopefully faster LongestSequence is right now.
+
 /** Gets the longest increasing sequence of elements in arr where every element has a higher newIndex and
  *      higher originalIndex then the previous element in the sequence
  *  (where new index is the value in the array, and original index is the index in the array).
@@ -79,10 +84,10 @@ export function LongestSequence(arr: number[]): {
         otherSequence.push(i);
     }
     //let longestSequence = longestSequenceBackwards.reverse();
-    
+
     
     return {
         //longestSequence: longestSequence.map(x => arr[x]),
-        otherSequence: otherSequence.map(x => arr[x])
+        otherSequence: otherSequence
     };
 }

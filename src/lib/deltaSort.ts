@@ -1,20 +1,3 @@
-// todonext;
-// // Yeah... it is. So... let's not do this, but instead just use LongestSequence to recover the delta
-
-// todonext;
-// // Okay... indexes... suck. But we need to use them to mutate lists...
-// //  Well... actually, we could just remove all moved elements, and then re-insert them?
-
-// todonext;
-// // Ugh... but... it seems like when we actually have deltas, we won't need this algorithm, which basically
-// //  just recovers the minimum delta from a set of ranges...
-
-// /** Given a list of indexes that have changed */
-// export function getMinimumMove(
-//     changes: {
-//         prevIndex: number;
-//         newIndex: number;
-//     }[]
-// ) {
-
-// }
+// TODO: The idea is that if we take two lists, with ranges marked as "unchanged", we should be able to apply
+//  some sort of sorting algorithm to make one list like the other (really, we really one one list, with a way to
+//  get the new sorting order), AND get the operations needed to do it, allowing efficient dom modifications.

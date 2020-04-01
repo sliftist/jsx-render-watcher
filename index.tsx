@@ -5,8 +5,11 @@ import * as ReactDOM from "react-dom";
 
 import { TestMain } from "./src/test";
 import { MountVanillaComponents } from "./src/mount2Vanilla";
-import { arrayDelta, KeyDeltaChanges } from "./src/delta";
+import { arrayDelta, KeyDeltaChanges, ArrayDeltaObj, ArrayDelta, DeltaContext, GetCurArrayDelta } from "./src/delta";
 import { keyBy } from "./src/lib/misc";
+import { g } from "pchannel";
+import { JSXNode } from "./src/mount2";
+import { eye0_pure } from "./src/eye";
 
 export let page = (
     <html>
@@ -33,11 +36,14 @@ if(typeof window !== "undefined") {
 }
 
 
-let count = 1000 * 50;
-let sparseCount = 1000 * 50;
+let count = 1000 * 100;
+let sparseCount = 1000 * 200;
+
+count = 100;
+sparseCount = 12;
 
 let libs = [
-    { name: "react", renderLib: React, mountLib: ReactDOM },
+    //{ name: "react", renderLib: React, mountLib: ReactDOM },
     { name: "preact", renderLib: preact, mountLib: preact },
     { name: "mount", renderLib: preact, mountLib: {
         render(jsx: JSX.Element, node: HTMLElement) {
@@ -50,10 +56,40 @@ let libs = [
     } },
 ];
 
+
+//todonext;
+// Time to test our SkipList. It is really more of summary tree, or... whatever... but... it is kind of like a skiplist...
+//  Testing should be fairly easy, we can do the standard range queries (sums, counting, min, max)
+
+
+//todonext;
+//  Oh wait... for our index delta problem... we can just keep track of our array of changes as ranges,
+//  and then apply them to a list of unchanged ranges (starting as everything). Deletes immediately collapse,
+//  and insertions split unchanged ranges.
+//  And then the unchanged ranges can store "original index", and just by iterating over the final range list we can
+//  get "prev index". And then inverting the unchanged ranges will give us changed ranges...
+// Yeah... But let's still test our SkipList, because... it could be cool?
+//  - But it doesn't replace our indexTree, because it doesn't do collapsing of nodes. Although... I guess it could
+//      give us index offsets at any point? Which... could be useful... although for this case it simply isn't needed,
+//      unless we want to collapse changes as we are tracking them (to collapse adds/removes), because the tree
+//      allows tracking of changes and finding the currentIndex efficiently, which allows new changes to be inserted.
+//      However... at the end we would be left with a list of changes in prevIndex order, which.
+//todonext;
+// Okay... for our index delta problem... we could use it to get prevIndex of any change, allowing us to
+//  keep a sorted list of changes, constantly. And then we could iterate through this list, keeping track of the
+//  running curIndexOffset, and prevIndex, and then directly use those to directly generate removes, inserts, etc?
+//  - Could we keep track of curIndex and prevIndex while inserting? Probably at least prevIndex, and then we could
+//      find curIndex easily enough after?
+//  - And moves with auxOrder would be easy to calculate, we just keep track of the values in auxStack, and then
+//      take them out as we use them.
+//      - Then add a TODO to support values being removed, and then added, in such a way that they don't need to be added or removed
+//          anymore... it is hard, and we will probably never support it, but... if LongestSequence ever supports ranges,
+//          we might do it.
+
 setTimeout(async function() {
-    await runTest(false);
-    await runTest(true);
-    runTestSparseDom();
+    //await runTest(false);
+    //await runTest(true);
+    //runTestSparseDom();
 }, 1000 * 1);
 
 
@@ -87,8 +123,8 @@ async function runTestHarness(
             } else {
                 let targetHTML = targetOutput.shift();
                 if(targetHTML !== root.innerHTML) {
-                    console.log(targetHTML);
-                    console.log(root.innerHTML);
+                    console.log("wrong", root.innerHTML);
+                    console.log("right", targetHTML);
                     throw new Error(`HTML varied for ${name}`);
                 }
             }
@@ -100,6 +136,7 @@ async function runTestHarness(
             mountLib,
             root,
             async renderOperation(name, code) {
+                if(g.gc) g.gc();
                 let time = Date.now();
                 await code();
                 time = Date.now() - time;
@@ -138,6 +175,13 @@ async function runTest(useKeys: boolean) {
                 )
             ))
         );
+        var jsxEye = eye0_pure(jsx);
+        let contextDelta!: ArrayDelta;
+        let ctx = new DeltaContext(() => {
+            //GetCurArrayDelta(jsxEye);
+            contextDelta = GetCurArrayDelta(jsx);
+        });
+        ctx.RunCode();
 
         await renderOperation("initial render", () => {
             let component = renderLib.createElement(Component, {});
@@ -145,13 +189,52 @@ async function runTest(useKeys: boolean) {
         });
 
         await renderOperation("rerender", async () => {
-            let spliceCount = 10;
-            let offset = 5;
-            let move1 = jsx.splice(-spliceCount - offset, spliceCount);
-            let move2 = jsx.splice(offset, spliceCount, ...move1);
-            jsx.splice(-offset, 0, ...move2);
+
+            let spliceCount = 2;
+            let offset = 0;
+
+            let curDelta: ArrayDelta = {
+                removes: (
+                    ([] as number[])
+                    .concat([jsx.length - offset - 1])
+                    .concat(Array(spliceCount).fill(0).map((x, i) => jsx.length - offset - spliceCount + i - 1).map(x => ~x).reverse())
+                    .concat(Array(spliceCount - 1).fill(0).map((x, i) => offset + i).map(x => ~x).reverse())
+                ),
+                inserts: (
+                    ([] as number[])
+                    .concat(Array(spliceCount - 1).fill(0).map((x, i) => offset + i).map(x => ~x))
+                    .concat(Array(spliceCount).fill(0).map((x, i) => jsx.length - offset - spliceCount + i - 2).map(x => ~x))
+                ),
+                auxOrder: (
+                    ([] as number[])
+                    .concat(Array(spliceCount - 1).fill(0).map((x, i) => i + spliceCount))
+                    .concat([spliceCount - 1])
+                    .concat(Array(spliceCount - 1).fill(0).map((x, i) => i))
+                )
+            };
+
+            //debugger;
+            let move1 = jsxEye.splice(-spliceCount - offset, spliceCount);
+            // Remove one from that amount we reinsert, so as it shift all the indexes, to test that.
+            move1.pop();
+            let move2 = jsxEye.splice(offset, spliceCount, ...move1);
+            jsxEye.splice(-offset, 0, ...move2);
+
+
+            ctx.RunCode();
+            let newDelta: ArrayDelta = contextDelta;
+
+            /*
+            if(JSON.stringify(newDelta) !== JSON.stringify(curDelta)) {
+                console.log("wrong", curDelta);
+                console.log("right", newDelta);
+                debugger;
+            }
+            */
             
-            // TODO: Add arrayDelta to jsx, to test efficient rerendering
+            let jsxTyped: ArrayDeltaObj<JSXNode> = jsx;
+            //jsxTyped[arrayDelta] = () => curDelta;
+            
             await new Promise(resolve => instance.forceUpdate(resolve));
         });
     });

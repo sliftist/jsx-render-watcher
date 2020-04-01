@@ -2,7 +2,7 @@ import { registerReadAccess, registerWrite, registerKeysReadAccess, registerOwnK
 import { getRootKey, getChildPath, getParentPath } from "./lib/path";
 import { unreachable, canHaveChildren } from "./lib/algorithms";
 import { g } from "./lib/misc";
-import { DeltaState, arrayDelta, DeltaContext, DeltaStateId, KeyDeltaChanges } from "./delta";
+import { DeltaState, arrayDelta, DeltaContext, DeltaStateId, KeyDeltaChanges, ArrayDeltaObj, ArrayDelta } from "./delta";
 
 /** Returned from eyes, to indicate what they are. */
 export const EyeMark = Symbol("EyeMark");
@@ -121,12 +121,14 @@ function unwrapEye(value: unknown) {
 //  that we don't cause a memory leak by permanently storing previous values. However, it also means that if the underlying
 //  raw values change, we may give the incorrect previous state. However... in this case we are also likely to simply miss
 //  changes, so there is no real solution to unproxied accesses.
-interface EyeDeltaState extends DeltaState {
+// NOTE: If in a DeltaContext run this state is not accessed, the DeltaContext automatically removes it. So if nothing
+//  requests delta, we don't have any, and so we have nothing to maintain. So adding delta management directly to eye is free.
+interface EyeLookupDeltaState extends DeltaState {
     curChanges: KeyDeltaChanges<unknown>|undefined;
     pendingChanges: KeyDeltaChanges<unknown>;
 }
-function eyeDeltaStateConstructor(lookup: { [key: string]: unknown }): EyeDeltaState {
-    let state: EyeDeltaState = {
+function eyeDeltaStateConstructor(lookup: { [key: string]: unknown }): EyeLookupDeltaState {
+    let state: EyeLookupDeltaState = {
         curChanges: undefined,
         pendingChanges: new Map(),
     };
@@ -135,8 +137,8 @@ function eyeDeltaStateConstructor(lookup: { [key: string]: unknown }): EyeDeltaS
     }
     return state;
 }
-function createId() {
-    let deltaId: DeltaStateId<EyeDeltaState> = {
+function createLookupDeltaId() {
+    let deltaId: DeltaStateId<EyeLookupDeltaState> = {
         startRun(state) {
             if(state.curChanges) throw new Error(`Internal error, startRun called before finishRun called`);
             state.curChanges = state.pendingChanges;
@@ -151,7 +153,7 @@ function createId() {
     return deltaId;
 }
 /** Should be called if the value changes, OR if it is added, OR if it is deleted */
-function onKeyChange(key: string, prevValue: unknown, newValue: unknown, id: DeltaStateId<EyeDeltaState>) {
+function onKeyChange(key: string, prevValue: unknown, newValue: unknown, id: DeltaStateId<EyeLookupDeltaState>) {
     let states = DeltaContext.GetAllStates(id);
     for(let state of states) {
         if(state.curChanges) {
@@ -268,6 +270,59 @@ function wrapMapFunctions(
     throw new Error(`Unhandled Map function, ${prop}`);
 }
 
+
+/*
+interface EyeArrayDeltaState extends DeltaState {
+    todonext;
+    // Ugh... so... MAYBE we should just keep track of mutated elements, and then figure out movement from that. Eh...
+    //  yeah... why not? We won't use LongestSequence... unless... enough elements change, in which case... we
+    //  should use the code inside GetCurArrayDelta to calculate the diff.
+    // Also, we need... to keep track of original indexes, on deletes?
+    // Oh, okay, so... I am 99% sure we need to put things into a tree, and use that to calculate indexes. We only need
+    //  the indexes for changed values though, so that's nice...
+    // Yeah... I guess... we just need a full tree, of indexes.
+    // And also a lookup to map values to list of tree nodes
+    // And then also... a list of removed/inserted/mutated values
+    // Oh... do we need a tree for both previous and next indexes? Possibly...
+    //  Yeah, two trees, one we apply the changes to immediately, and for the other we queue the changes, and then apply them
+    //  all at once.
+    todonext;
+    // OH! Maybe... we can just mark ranges as being touched, and then... do a sorting algorithm to find the
+    //  transformations? It would work a lot better for primitive arrays, where values are duplicated a lot...
+
+    curChanges: KeyDeltaChanges<unknown>|undefined;
+    pendingChanges: KeyDeltaChanges<unknown>;
+}
+function eyeArrayDeltaStateConstructor(array: unknown[]): EyeArrayDeltaState {
+    let state: EyeArrayDeltaState = {
+        curChanges: undefined,
+        pendingChanges: new Map(),
+    };
+    for(let key in lookup) {
+        addChange(key, undefined, lookup[key], state.pendingChanges);
+    }
+    return state;
+}
+function createArrayDeltaId() {
+    let deltaId: DeltaStateId<EyeArrayDeltaState> = {
+        startRun(state) {
+            if(state.curChanges) throw new Error(`Internal error, startRun called before finishRun called`);
+            state.curChanges = state.pendingChanges;
+            // All the changes that happen after a run starts, until the next run starts, should be queued for the next
+            //  run. It must be done in startRun and not finishRun in case a run modifies it's own state, and therefore has to rerun.
+            state.pendingChanges = new Map();
+        },
+        finishRun(state) {
+            state.curChanges = undefined;
+        }
+    }
+    return deltaId;
+}
+*/
+
+
+
+
 function wrapArrayFunctions(
     state: unknown[],
     prop: string,
@@ -337,7 +392,7 @@ function eyeInternal<T extends object>(
         }
     }
 
-    let deltaId = createId();
+    let deltaId = createLookupDeltaId();
 
     return eye;
 
@@ -539,7 +594,8 @@ function eyeInternal<T extends object>(
                     let deltaContext = DeltaContext.GetCurrent();
                     if(deltaContext) {
                         let state = deltaContext.GetOrAddState(deltaId, () => eyeDeltaStateConstructor(eye));
-                        return () => ({ keysChanged: state.curChanges });
+                        //let delta: ArrayDelta = state.curChanges;
+                        //return () => delta;
                     }
                 }
 
