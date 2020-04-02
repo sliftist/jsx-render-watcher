@@ -29,3 +29,12 @@ export function isShallowEqual<T>(a: T, b: T): boolean {
     }
     return true;
 }
+
+export function min<T>(lhs: T, rhs: T): T {
+    if(lhs <= rhs) return lhs;
+    return rhs;
+}
+export function max<T>(lhs: T, rhs: T): T {
+    if(lhs > rhs) return lhs;
+    return rhs;
+}

@@ -6,10 +6,12 @@ import * as ReactDOM from "react-dom";
 import { TestMain } from "./src/test";
 import { MountVanillaComponents } from "./src/mount2Vanilla";
 import { arrayDelta, KeyDeltaChanges, ArrayDeltaObj, ArrayDelta, DeltaContext, GetCurArrayDelta } from "./src/delta";
-import { keyBy } from "./src/lib/misc";
+import { keyBy, min, max } from "./src/lib/misc";
 import { g } from "pchannel";
 import { JSXNode } from "./src/mount2";
 import { eye0_pure } from "./src/eye";
+import { SkipList } from "./src/lib/SkipList";
+import { compareString } from "./src/lib/algorithms";
 
 export let page = (
     <html>
@@ -57,34 +59,40 @@ let libs = [
 ];
 
 
-//todonext;
-// Time to test our SkipList. It is really more of summary tree, or... whatever... but... it is kind of like a skiplist...
-//  Testing should be fairly easy, we can do the standard range queries (sums, counting, min, max)
-
 
 //todonext;
-//  Oh wait... for our index delta problem... we can just keep track of our array of changes as ranges,
-//  and then apply them to a list of unchanged ranges (starting as everything). Deletes immediately collapse,
-//  and insertions split unchanged ranges.
-//  And then the unchanged ranges can store "original index", and just by iterating over the final range list we can
-//  get "prev index". And then inverting the unchanged ranges will give us changed ranges...
-// Yeah... But let's still test our SkipList, because... it could be cool?
-//  - But it doesn't replace our indexTree, because it doesn't do collapsing of nodes. Although... I guess it could
-//      give us index offsets at any point? Which... could be useful... although for this case it simply isn't needed,
-//      unless we want to collapse changes as we are tracking them (to collapse adds/removes), because the tree
-//      allows tracking of changes and finding the currentIndex efficiently, which allows new changes to be inserted.
-//      However... at the end we would be left with a list of changes in prevIndex order, which.
-//todonext;
-// Okay... for our index delta problem... we could use it to get prevIndex of any change, allowing us to
-//  keep a sorted list of changes, constantly. And then we could iterate through this list, keeping track of the
-//  running curIndexOffset, and prevIndex, and then directly use those to directly generate removes, inserts, etc?
-//  - Could we keep track of curIndex and prevIndex while inserting? Probably at least prevIndex, and then we could
-//      find curIndex easily enough after?
-//  - And moves with auxOrder would be easy to calculate, we just keep track of the values in auxStack, and then
-//      take them out as we use them.
-//      - Then add a TODO to support values being removed, and then added, in such a way that they don't need to be added or removed
-//          anymore... it is hard, and we will probably never support it, but... if LongestSequence ever supports ranges,
-//          we might do it.
+// Test SkipList
+//  Sum
+//  Min
+//  Max
+//  Count
+
+
+let sumList = new SkipList<{ sortOrder: string; value: number }, { firstValue: string; lastValue: string; sum: number }>(
+    (a, b) => ({ firstValue: min(a.firstValue, b.firstValue), lastValue: max(a.lastValue, b.lastValue), sum: a.sum + b.sum }),
+    (value, sum) => {
+        if(value.sortOrder < sum.firstValue) return -1;
+        if(value.sortOrder > sum.lastValue) return +1;
+        return 0;
+    },
+    value => ({ firstValue: value.sortOrder, lastValue: value.sortOrder, sum: value.value })
+);
+
+sumList.addNode({ sortOrder: "a", value: 2 });
+sumList.addNode({ sortOrder: "b", value: 1 });
+sumList.addNode({ sortOrder: "c" , value: 3 });
+sumList.addNode({ sortOrder: "k" , value: -2 });
+sumList.addNode({ sortOrder: "q" , value: 1 });
+
+console.log("Should be 6", sumList.getSumBefore({ sortOrder: "e", value: 0 })?.sum);
+
+sumList.addNode({ sortOrder: "ba" , value: 1 });
+sumList.addNode({ sortOrder: "aa" , value: 1 });
+
+console.log("Should be 4", sumList.getSumBefore({ sortOrder: "ba", value: 0 })?.sum);
+
+debugger;
+
 
 setTimeout(async function() {
     //await runTest(false);
@@ -93,9 +101,6 @@ setTimeout(async function() {
 }, 1000 * 1);
 
 
-//todonext;
-// We need a sort algorithm, that can support specifications that say certain elements are already in order,
-//  and then outputs the list of swaps/whatever to make the changes.
 
 
 async function runTestHarness(

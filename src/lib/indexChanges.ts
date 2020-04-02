@@ -1,3 +1,164 @@
+import { ArrayDelta } from "../delta";
+import { SkipList } from "./SkipList";
+import { sort } from "./algorithms";
+
+//todonext;
+//  Oh wait... for our index delta problem... we can just keep track of our array of changes as ranges,
+//  and then apply them to a list of unchanged ranges (starting as everything). Deletes split ranges,
+//      and insertions add new ranges that are marked as changed.
+//  And then the unchanged ranges can store "original index", and just by iterating over the final range list we can
+//  get "prev index". And then inverting the unchanged ranges will give us changed ranges...
+//  - And moves with auxOrder would be easy to calculate, we just keep track of the values in auxStack, and then
+//      take them out as we use them.
+//      - Then add a TODO to support values being removed, and then added, in such a way that they don't need to be added or removed
+//          anymore... it is hard, and we will probably never support it, but... if LongestSequence ever supports ranges,
+//          we might do it.
+
+
+type ArrayMutation = {
+    index: number;
+    // If < 0 it means there was a deletion at the index, > 0 there was an insert. A set should be turned into
+    //  a delete and then insertion.
+    sizeDelta: number;
+};
+
+todonext;
+// Test getChanges.
+
+//todonext
+// Actually... after we get getChanges working... we should do this. Basically, it just means that sumList is
+//  maintained in realtime, so deletions can be tracked BEFORE the values are deleted, which lets us store
+//  them in a sorted list that represents the auxStack correctly.
+// TODO: We could probably use SkipList to store values in an array (which allows lookup by index, and is fast to update),
+//  and then with this we could store all the indexes of values from the original array, so we could get the original indexes
+//  from our deletions (which is otherwise hard, because sorting by the index at the time of deletion may be out of
+//  order from the original index order, which is the order the deletions will be applied in with the delta)... which
+//  would let us store a sorted list of the auxStack, which we could then use to map a Map, which would then let
+//  us do moves as well.
+
+/** Mutations should include deletes, inserts AND sets (and of course, in order they were originally applied). */
+export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]): ArrayDelta {
+    type Range = {
+        state: "unchanged"|"inserted";
+        originalIndex: number;
+    };
+    type RangeIndex = {
+        size: number;
+    };
+
+    let sumList = new SkipList<Range, RangeIndex>(
+        (lhs, rhs) => ({ size: lhs.size + rhs.size }),
+        (lhs, rhs) => lhs.sumBefore.size - rhs.sumBefore.size,
+    );
+
+    sumList.addNode({ state: "unchanged", originalIndex: 0 }, { size: arrayOriginalSize }, { size: 0 });
+
+    let deletions: {
+        originalIndex: number;
+        size: number;
+    }[] = [];
+
+    for(let mutation of mutations) {
+        if(mutation.index < 0) {
+            throw new Error(`Index should not be before the start of the array`);
+        }
+        if(mutation.sizeDelta === 0) continue;
+        if(mutation.sizeDelta > 0) {
+            sumList.addNode({ state: "inserted", originalIndex: -1 }, { size: mutation.sizeDelta }, { size: mutation.index });
+        } else {
+            let deleteSize = -mutation.sizeDelta;
+            let deleteStart = mutation.index;
+            let deleteEnd = deleteStart + deleteSize;
+            sumList.mutateSumRange(
+                { size: deleteStart },
+                { size: deleteSize },
+                (valuesStart, values) => {
+                    let outputValues: { sumIncluded: RangeIndex, value: Range }[] = [];
+
+                    let indexStart = valuesStart?.size || 0;
+                    if(indexStart > deleteStart) {
+                        throw new Error(`Internal error, the mutation was before the first range matched, but the ranges should go to index 0, and the mutation should be at >= 0, so... this is impossible`);
+                    }
+
+                    if(values.length === 0) return outputValues;
+
+                    // We only care about the first value, the size of the values, and then the last value.
+                    let firstValue = values[0];
+                    let indexEnd = indexStart + values.reduce((a, b) => a + b.sumIncluded.size, 0);
+                    let lastValue = values[values.length - 1];
+
+                    // Get the part before the delete.
+                    if(indexStart < deleteStart) {
+                        values.splice(0, -1);
+                        // (Otherwise it is ===, and there is no before part)
+                        let sizeKept = deleteStart - indexStart;
+                        if(firstValue.value.state === "unchanged") {
+                            outputValues.push({ sumIncluded: { size: sizeKept }, value: { state: "unchanged", originalIndex: firstValue.value.originalIndex } });
+                            deletions.push({ originalIndex: firstValue.value.originalIndex + sizeKept, size: firstValue.sumIncluded.size - sizeKept });
+                        } else {
+                            outputValues.push({ sumIncluded: { size: sizeKept }, value: { state: "inserted", originalIndex: -1 } });
+                        }
+                    }
+
+                    if(deleteEnd < indexEnd) {
+                        values.splice(-1, -1);
+                        let sizeKept = indexEnd - deleteEnd;
+                        if(firstValue.value.state === "unchanged") {
+                            outputValues.push({ sumIncluded: { size: sizeKept }, value: { state: "unchanged", originalIndex: firstValue.value.originalIndex + firstValue.sumIncluded.size - sizeKept } });
+                            deletions.push({ originalIndex: firstValue.value.originalIndex, size: firstValue.sumIncluded.size - sizeKept });
+                        } else {
+                            outputValues.push({ sumIncluded: { size: sizeKept }, value: { state: "inserted", originalIndex: -1 } });
+                        }
+                    }
+
+                    // Middle values
+                    for(let value of values) {
+                        if(value.value.state === "unchanged") {
+                            deletions.push({ originalIndex: value.value.originalIndex, size: value.sumIncluded.size });
+                        }
+                    }
+
+                    return outputValues;
+                }
+            );
+        }
+    }
+
+    let delta: ArrayDelta = {
+        auxOrder: [],
+        inserts: [],
+        removes: [],
+    };
+    //todonext;
+    // Ugh... wait... this is... we need the indexes of the original ranges, the unchanged ranges changed?
+    //  Uh... and then we can infer the deletes (everything not unchanged), and inserts (everything changed, indexes from summing the sizes).
+    //  And... we could make a lookup for the deletes and inserts, keeping track of the aux positions, and then pulling
+    //  them out when iterating over the inserts, to create an auxOrder.
+    let finalRanges = sumList.getAllNodes();
+    let curIndex = 0;
+    for(let range of finalRanges) {
+        let size = range.sumIncluded.size;
+        if(range.value.state === "inserted") {
+            for(let i = 0; i < size; i++) {
+                delta.inserts.push(curIndex + i);
+            }
+        }
+        curIndex += size;
+    }
+
+    for(let deleteRange of deletions) {
+        let { originalIndex, size } = deleteRange;
+        for(let i = originalIndex; i < originalIndex + size; i++) {
+            delta.removes.push(i);
+        }
+    }
+
+    sort(delta.removes, x => -x);
+    sort(delta.inserts, x => x);    
+
+    return delta;
+}
+
 // //todonext;
 // // OH! Maybe... we can just mark ranges as being touched, and then... do a sorting algorithm to find the
 // //  transformations? It would work a lot better for primitive arrays, where values are duplicated a lot...
