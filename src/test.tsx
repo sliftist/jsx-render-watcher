@@ -13,6 +13,14 @@ import { ThrowIfNotImplementsData } from "pchannel";
 import { render } from "preact-render-to-string";
 import { MountVanillaComponents } from "./mount2Vanilla";
 import { ComponentInstanceClass } from "./mount2";
+import { getChanges } from "./lib/indexChanges";
+
+
+import "./lib/testHelper_g";
+import "./lib/SkipList.test";
+import "./lib/indexChanges.test";
+
+
 
 
 

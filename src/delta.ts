@@ -73,10 +73,10 @@ export type ArrayDelta = {
     // Insert. If the number < 0, it becomes ~ of the value.
     //  The values are sorted low to high, and are the indexes in the final array. The array itself
     //  is already changed, so the values can be obtained simply from reading the final array.
-    //  If the value is < 0, then it pops the auxOrder, and takes the value from the aux stack at the index
-    //  of the popped value, and that value is the value inserted.
+    //  If the value is < 0, then it takes the next number from auxOrder, and inserts the value at that index in the auxStack.
     //  This value is equal to the value in the final array, however the fact that is came from the array
     //  in the first place can be used as an optimization.
+    //  - Values are only used once in the auxStack
     inserts: number[];
     auxOrder: number[];
 };

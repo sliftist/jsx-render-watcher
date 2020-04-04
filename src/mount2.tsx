@@ -850,11 +850,12 @@ function mount2Tree(
                         arr.splice(removeIndex, 1);
                     }
 
+                    let auxIndex = 0;
                     for(let insertIndex of deltaObj.inserts) {
                         let insertNode;
                         if(insertIndex < 0) {
                             insertIndex = ~insertIndex;
-                            let auxOrder = deltaObj.auxOrder.pop();
+                            let auxOrder = deltaObj.auxOrder[auxIndex++];
                             if(auxOrder === undefined) throw new Error(`The delta insertions uses more values than the auxOrder can provide. This means the delta is invalid.`)
                             insertNode = moveStack[auxOrder];
                             if(insertNode === undefined) {
@@ -877,7 +878,7 @@ function mount2Tree(
                         }
                         arr.splice(insertIndex, 0, insertNode);
                     }
-                    if(deltaObj.auxOrder.length > 0) {
+                    if(deltaObj.auxOrder.length !== auxIndex) {
                         throw new Error(`Values specified as moved, but not used. This means the delta is invalid.`);
                     }
 

@@ -38,3 +38,9 @@ export function max<T>(lhs: T, rhs: T): T {
     if(lhs > rhs) return lhs;
     return rhs;
 }
+
+const nextTextSeqNum = Symbol();
+export function globalNextId() {
+    (Math.random as any)[nextTextSeqNum] = (Math.random as any)[nextTextSeqNum] || 0;
+    return (Math.random as any)[nextTextSeqNum]++;
+}

@@ -60,38 +60,10 @@ let libs = [
 
 
 
-//todonext;
-// Test SkipList
-//  Sum
-//  Min
-//  Max
-//  Count
 
 
-let sumList = new SkipList<{ sortOrder: string; value: number }, { firstValue: string; lastValue: string; sum: number }>(
-    (a, b) => ({ firstValue: min(a.firstValue, b.firstValue), lastValue: max(a.lastValue, b.lastValue), sum: a.sum + b.sum }),
-    (value, sum) => {
-        if(value.sortOrder < sum.firstValue) return -1;
-        if(value.sortOrder > sum.lastValue) return +1;
-        return 0;
-    },
-    value => ({ firstValue: value.sortOrder, lastValue: value.sortOrder, sum: value.value })
-);
+import "./src/lib/SkipList";
 
-sumList.addNode({ sortOrder: "a", value: 2 });
-sumList.addNode({ sortOrder: "b", value: 1 });
-sumList.addNode({ sortOrder: "c" , value: 3 });
-sumList.addNode({ sortOrder: "k" , value: -2 });
-sumList.addNode({ sortOrder: "q" , value: 1 });
-
-console.log("Should be 6", sumList.getSumBefore({ sortOrder: "e", value: 0 })?.sum);
-
-sumList.addNode({ sortOrder: "ba" , value: 1 });
-sumList.addNode({ sortOrder: "aa" , value: 1 });
-
-console.log("Should be 4", sumList.getSumBefore({ sortOrder: "ba", value: 0 })?.sum);
-
-debugger;
 
 
 setTimeout(async function() {
