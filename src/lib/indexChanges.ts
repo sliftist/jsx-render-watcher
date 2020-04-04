@@ -37,8 +37,13 @@ export type ArrayMutation = {
 
 g.linkedListToList = linkedListToList;
 
+//todonext;
+// Okay, make this a class, that takes mutations one at a time? And then can finalize the output at any time,
+//  BUT, also takes an arrNew and arrPrev when finalizating the output, which it uses to generate moves.
+//  We should probably write a test or two for moves as well...
+
 /** Mutations should include deletes, inserts AND sets (and of course, in order they were originally applied). */
-export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]): ArrayDelta {
+export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[], smallSplitFactor: boolean): ArrayDelta {
     type Range = {
         state: "unchanged"|"inserted";
         originalIndex: number;
@@ -50,6 +55,7 @@ export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]
     let sumList = new SkipList<Range, RangeIndex>(
         (lhs, rhs) => ({ size: lhs.size + rhs.size }),
         (lhs, rhs) => lhs.sumBefore.size - rhs.sumBefore.size,
+        smallSplitFactor ? ({ splitThreshold: 4, joinThreshold: 2 }) : undefined
     );
 
     sumList.addNode({ state: "unchanged", originalIndex: 0 }, { size: arrayOriginalSize }, { size: 0 });
@@ -61,65 +67,67 @@ export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]
 
     for(let i = 0; i < mutations.length; i++) {
         g.mutateIndex = i;
+
+        if(g.curTestName === "test large scale 0" && g.mutateIndex === 42 && g.loopIndex === 20) {
+            debugger;
+        }
+
         let mutation = mutations[i];
         if(mutation.index < 0) {
             throw new Error(`Index should not be before the start of the array`);
         }
         if(mutation.sizeDelta === 0) continue;
         if(mutation.sizeDelta > 0) {
-            //todonext;
-            // Oh right... if we insert in the middle of an unchanged range... we 
-            //sumList.addNode({ state: "inserted", originalIndex: -1 }, { size: mutation.sizeDelta }, { size: mutation.index });
             let insertedRange = { value: { originalIndex: -1, state: "inserted" } as Range, sumIncluded: { size: mutation.sizeDelta } };
-            try {
-                runMutate();
-            } catch(e) {
-                console.log(e);
-                debugger;
-                console.log(linkedListToList(sumList.valueRoot).map(x => x.sumIncluded.size));
-                console.log(linkedListToList(sumList.valueRoot).map(x => x.lastValue.state));
-                console.log(linkedListToList(sumList.valueRoot?.higher)[0]);
-                console.log(linkedListToList(sumList.valueRoot?.higher).map(x => x.sumIncluded.size));
-                debugger;
-                runMutate();
-            }
-            function runMutate() {
-                sumList.mutateSumRange(
-                    { size: mutation.index },
-                    { size: mutation.index },
-                    (valuesStart, values) => {
-                        if(values.length === 0) {
-                            return [insertedRange];
-                        } else if(values.length === 1) {
-                            let value = values[0];
-                            let index = valuesStart?.size || 0;
-                            let { originalIndex, state } = value.value;
-                            let beforeSize = mutation.index - index;
-                            let afterSize = value.sumIncluded.size - beforeSize;
-                            values = [];
-                            if(beforeSize > 0) {
+            sumList.mutateSumRange(
+                { size: mutation.index },
+                { size: mutation.index },
+                (valuesStart, values) => {
+                    if(values.length === 0) {
+                        return [insertedRange];
+                    } else if(values.length === 1) {
+                        let value = values[0];
+                        let index = valuesStart?.size || 0;
+                        let { originalIndex, state } = value.value;
+                        let beforeSize = mutation.index - index;
+                        let afterSize = value.sumIncluded.size - beforeSize;
+                        values = [];
+                        if(beforeSize > 0) {
+                            if(originalIndex >= 0) {
                                 values.push({ sumIncluded: { size: beforeSize }, value: { originalIndex: originalIndex, state } });
+                            } else {
+                                // If before is an insert, merge it with our current insert
+                                insertedRange.sumIncluded.size += beforeSize;
                             }
-                            values.push(insertedRange);
-                            if(afterSize > 0) {
-                                values.push({ sumIncluded: { size: afterSize }, value: { originalIndex: originalIndex + beforeSize, state } });
-                            }
-                            return values;
-                        } else {
-                            debugger;
-                            throw new Error(`Unexpected multiple collisions with zero length range`);
                         }
+                        values.push(insertedRange);
+                        if(afterSize > 0) {
+                            if(originalIndex >= 0) {
+                                values.push({ sumIncluded: { size: afterSize }, value: { originalIndex: originalIndex + beforeSize, state } });
+                            } else {
+                                // If after is an insert, merge it with our current insert
+                                insertedRange.sumIncluded.size += afterSize;
+                            }
+                        }
+                        return values;
+                    } else {
+                        debugger;
+                        throw new Error(`Unexpected multiple collisions with zero length range`);
                     }
-                );
-            }
+                }
+            );
         } else {
             let deleteSize = -mutation.sizeDelta;
             let deleteStart = mutation.index;
             let deleteEnd = deleteStart + deleteSize;
+
+            // BUG: It is adding the before sum twice when we get to the one before values? So it shouldn't add it twice,
+            //  and then we would iterate over more sums
             sumList.mutateSumRange(
                 { size: deleteStart },
                 { size: deleteStart + deleteSize },
                 (valuesStart, values) => {
+                    
 
                     let indexStart = valuesStart?.size || 0;
                     if(indexStart > deleteStart) {
@@ -201,7 +209,9 @@ export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]
     sort(delta.removes, x => -x);
     sort(delta.inserts, x => x);    
 
-    sumList.validateAllNodes();
+    if(g.TEST) {
+        sumList.validateAllNodes();
+    }
 
     return delta;
 }

@@ -39,13 +39,13 @@ export class SkipList<Value, Sum> {
             lhs: { value: Value; sumBefore: Sum },
             rhs: { value: Value; sumBefore: Sum },
         ) => number,
+        private options = {
+            // We split SumNodes when > splitThreshold
+            splitThreshold: 10,
+            // We join SumNodes when < joinThreshold
+            joinThreshold: 2
+        }
     ) { }
-
-    
-    // We split SumNodes when > splitThreshold
-    static readonly splitThreshold = 4;
-    // We join SumNodes when < joinThreshold
-    static readonly joinThreshold = 2;
 
     // The gap between the split/join thresholds prevents thrashing, which happens if there is a single threshold, and you repeatedly remove/insert
     //  to go back and forth from that boundary.
@@ -80,20 +80,11 @@ export class SkipList<Value, Sum> {
         };
         if(!this.valueRoot) {
             this.valueRoot = newNode;
-
-            if(typeof this.valueRoot?.next === "string") {
-                debugger;
-            }
-
-            return newNode;
         }
-        if(beforeNode) {
+        else if(beforeNode) {
             newNode.higher = beforeNode.higher;
             insertAfter(beforeNode, newNode);
         } else {
-            if(typeof this.valueRoot.next === "string") {
-                debugger;
-            }
             insertBefore(this.valueRoot, newNode);
             newNode.higher = this.valueRoot.higher;
             if(newNode.higher) {
@@ -101,11 +92,6 @@ export class SkipList<Value, Sum> {
             }
             this.valueRoot = newNode;
         }
-
-        if(typeof this.valueRoot?.next === "string") {
-            debugger;
-        }
-
         return newNode;
     }
 
@@ -145,7 +131,7 @@ export class SkipList<Value, Sum> {
                 { sumBefore: curSum, value: cur.lastValue },
                 { sumBefore: sumBefore, value: value }
             );
-            if(diff > 0 || !includeEqual && diff === 0 || "lower" in cur || !cur.next) {
+            if(diff > 0 || !includeEqual && diff === 0 || !cur.next) {
                 if("lower" in cur) {
                     if(prev) {
                         if(!("lower" in prev)) throw new Error(`Internal error, cur and prev are the same type, this is unreachable`);
@@ -162,14 +148,6 @@ export class SkipList<Value, Sum> {
                         
                         continue;
                     } else {
-                        if(!cur.prev && cur.lower.prev) {
-                            // Our validate should catch this, but it isn't?
-                            this.validateAllNodes("wtf");
-                            debugger;
-
-                            throw new Error(`Internal error, the current has no previous, and we appear to be at the start of a group, but... there is a group before our lower.`);
-                        }
-
                         // Go down from cur
                         cur = cur.lower;
                     }
@@ -194,24 +172,25 @@ export class SkipList<Value, Sum> {
     // Called on leaf node when it is inserted (after it is inserted into the list, preserving next/prev, and setting a higher,
     //  which may be invalid (as in the higher may be > the node)).
     private rebalanceNode(listNode: ListNode<Sum, Value>|ListNodeLeaf<Sum, Value>) {
-
         let higherNodes: ListNode<Sum, Value>[] = [];
 
         let higher = listNode.higher;
 
-        if(higher && !higher.prev && higher.lower.prev) {
+        if(g.curTestName === "test large scale 0" && g.mutateIndex === 42 && g.loopIndex === 20) {
+            todonext;
+            // Ugh... we need to just keep track of dirty nodes, and then rebalance those, uh... low depth first,
+            //  and then we should just not even keep track of the nodes to change inside of this (well, except for
+            //  further triggered nodes).
+            todonext;
+            // BUT REALLY! We should just give up on the whole tree to begin with... FUCK!
+            console.log(`Rebalance for ${higher?.id}`);
             debugger;
-            throw new Error(`Higher is messed up`);
         }
 
         let start = listNode;
         while(true) {
             let prev = start.prev;
             if(!prev) break;
-            // If there is no previous higher, then it should implicitly take ours
-            if(higher && !prev.higher) {
-                prev.higher = higher;
-            }
             if(prev.higher !== higher) break;
             start = prev;
         }
@@ -228,35 +207,25 @@ export class SkipList<Value, Sum> {
             }
         }
 
-        if(typeof (start as any) === "string") {
-            debugger;
-        }
-        
         // Check for joining
-        if(siblingCount < SkipList.joinThreshold) {
+        if(siblingCount < this.options.joinThreshold) {
             // Extend our end to include the next group of sibling. As we reset the higher value
             //  for our children, this will disconnect the previous highest node, which will eventually
             //  result in it being garbage collected. We might recreate a new node in the same location, but...
             //  it is likely the new position (if we do add another highest node) will change.
             let nextHigher = end?.higher;
             if(nextHigher) {
-                //debugger;
-                //console.log("before remove node join", this.stringifyTree());
                 // We remove nextHigher, but leave the references from their children to the nextHigher. Which is okay,
                 //  as we will be iterating over the children and resetting their higher reference shortly
                 this.removeNode(nextHigher);
-                //console.log("after remove node join", this.stringifyTree());
-                //this.validateAllNodes();
-
-
-                while(end && end.higher === nextHigher) {
+                while(end && end.higher === start.higher) {
                     end = end.next;
                     siblingCount++;
                 }
             }
         }
 
-        let splitThreshold = SkipList.splitThreshold;
+        let splitThreshold = this.options.splitThreshold;
 
         // Update all higher values, and sumIncludes for higher nodes.
         {
@@ -268,7 +237,6 @@ export class SkipList<Value, Sum> {
             }
             let count = 0;
             while(cur && cur !== end) {
-
                 if(siblingCount > splitThreshold) {
                     // if splitThreshold == 8, count == 9, this will match at count % 4 == 1, count > 4, so 5, and 9.
                     let isSplitPoint = count > splitThreshold / 2 && count % (splitThreshold / 2) === siblingCount % (splitThreshold / 2);
@@ -296,17 +264,8 @@ export class SkipList<Value, Sum> {
                     }
                 } else if(count === 0) {
                     if(higher) {
-                        if(!higher.prev && cur.prev) {
-                            debugger;
-                            throw new Error(`Internal error, the current higher has no previous, and we appear to be at the start of a group, but... there is a group before us. So does the group before us have no higher (which is invalid), or what?`);
-                        }
                         higher.lower = cur;
                     }
-                }
-
-                if(higher && !higher.prev && higher.lower.prev) {
-                    debugger;
-                    throw new Error(`Higher is messed up`);
                 }
                 
                 if(higher && higher.lower === cur) {
@@ -324,11 +283,6 @@ export class SkipList<Value, Sum> {
             }
         }
 
-        if(higher && !higher.prev && higher.lower.prev) {
-            debugger;
-            throw new Error(`Higher is messed up`);
-        }
-
         // And we have to rebalance any touched parent nodes, at to update directChildCount, their sums, and maybe rebalance.
         for(let changedHigher of higherNodes) {
             this.rebalanceNode(changedHigher);
@@ -344,13 +298,13 @@ export class SkipList<Value, Sum> {
         }
         // Update our children to point to a new higher value.
         if("lower" in node) {
-            let replacement = node.next;
-            if(replacement) {
-                // And if we are making the next use our higher, then the lower should be our lower too
-                replacement.lower = node.lower;
-            }
+            let replacement = node.prev;
             if(!replacement) {
-                replacement = node.prev;
+                replacement = node.next;
+                if(replacement) {
+                    // And if we are making the next use our higher, then the lower should be our lower too
+                    replacement.lower = node.lower;
+                }
             }
             let cur = UnionUndefined(node.lower);
             while(cur && cur.higher === node) {
@@ -375,11 +329,6 @@ export class SkipList<Value, Sum> {
         }
 
         removeNode(node);
-        
-
-        if(typeof this.valueRoot?.next === "string") {
-            debugger;
-        }
     }
 
     public getSumBefore(value: Value): Sum|undefined {
@@ -431,8 +380,20 @@ export class SkipList<Value, Sum> {
 
         let newValueNodes = reduce(firstSumBefore, valueNodes.map(x => ({ sumIncluded: x.sumIncluded, value: x.lastValue })));
 
+        let higherNodesToRebalance: Set<ListNode<Sum, Value>> = new Set();
+
         for(let i = 0; i < valueNodes.length; i++) {
             let valueNode = valueNodes[i];
+            if(valueNode.higher) {
+                higherNodesToRebalance.add(valueNode.higher);
+                // Ugh... removal might change the next or previous, so just add both...
+                if(valueNode.higher.next) {
+                    higherNodesToRebalance.add(valueNode.higher.next);
+                }
+                if(valueNode.higher.prev) {
+                    higherNodesToRebalance.add(valueNode.higher.prev);
+                }
+            }
             this.removeNode(valueNode);
         }
 
@@ -440,18 +401,24 @@ export class SkipList<Value, Sum> {
         let prev = beforeObj?.beforeNode;
         for(let newValue of newValueNodes) {
             let newNode = this.addNodeInternal(newValue.value, newValue.sumIncluded, prev);
+            if(newNode.higher) {
+                higherNodesToRebalance.add(newNode.higher);
+            }
             prev = newNode;
         }
 
-        // Rebalance starting from the start of the previous group (we could also take the start of the group of the first newNode,
-        //  if we added any new nodes).
-        let rebalanceBase = beforeObj?.beforeNode || this.valueRoot;
-        while(rebalanceBase && rebalanceBase.prev && rebalanceBase.prev.higher === rebalanceBase.higher) {
-            rebalanceBase = rebalanceBase.prev;
+        for(let higher of higherNodesToRebalance) {
+            if(higher.next as any !== "disposed") {
+                this.rebalanceNode(higher.lower);
+            }
+        }
+        if(this.valueRoot) {
+            // Also rebalance the root, to add higher nodes if needed
+            this.rebalanceNode(this.valueRoot);
         }
 
-        if(rebalanceBase) {
-            this.rebalanceNode(rebalanceBase);
+        if(g.TEST) {
+            this.validateAllNodes();
         }
     }
 
@@ -486,7 +453,6 @@ export class SkipList<Value, Sum> {
             let index = 0;
             while(cur) {
                 let higher = cur.higher;
-
                 if(higher) {
                     if(typeof higher.next === "string") {
                         debugger;
@@ -527,7 +493,22 @@ export class SkipList<Value, Sum> {
                     throw new Error(`Disposed value in prev`);
                 }
 
-                cur = cur.next;
+                if("lower" in cur) {
+                    let lower = UnionUndefined(cur.lower);
+                    let sum: Sum|undefined;
+                    while(lower && lower.higher === cur) {
+                        sum = this.reduce(sum, lower.sumIncluded);
+                        if(lower.next?.higher !== cur) break;
+                        lower = lower.next;
+                    }
+                    let diff = this.compare({ value: cur.lastValue, sumBefore: cur.sumIncluded }, { value: lower?.lastValue as any, sumBefore: sum as any });
+                    if(diff !== 0) {
+                        debugger;
+                        throw new Error(`Child sums incorrect, ${g.mutateIndex} ${g.loopIndex}  ${JSON.stringify(cur.sumIncluded)}, ${JSON.stringify(sum)}, ${cur.id}, ${cur.lower.id}`);
+                    }
+                }
+
+                cur = cur.next as ListNode<Sum, Value>|ListNodeLeaf<Sum, Value>;
                 index++;
             }
             cur = curHigher;

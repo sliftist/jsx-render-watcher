@@ -16,6 +16,7 @@ if(!g.it) {
             let path = describeStack.concat(name);
             
             g.TEST = true;
+            g.curTestName = name;
             //try {
                 await code();
                 time = Date.now() - time;

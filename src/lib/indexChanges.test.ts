@@ -97,26 +97,42 @@ function createTestArray(arrayLength: number): TestObj[] {
     return values;
 }
 
-function testGetChanges(arr: TestObj[], mutations: (ArrayMutation&{values: TestObj[]})[], dontThrow=true): void {
-    if(!dontThrow) {
-        debugger;
+function testGetChanges(arr: TestObj[], mutations: (ArrayMutation&{values: TestObj[]})[], smallSplitFactor: boolean, dontThrow:boolean|"throw"=true): void {
+    if(dontThrow === false) {
+        //debugger;
     }
     let originalArr = arr.slice();
 
-    let changes = getChanges(arr.length, mutations);
     let arrForDelta = arr.slice();
 
     applyArrayMutations(mutations, arr);
 
+    if(dontThrow === "throw") {
+        debugger;
+    }
+
+    let changes = getChanges(originalArr.length, mutations, smallSplitFactor);
     applyArrayDelta(changes, arrForDelta, arr);
 
-    if(!dontThrow) {
+    if(dontThrow === false) {
         console.log("mutations", mutations.map(x => ({index: x.index, size: x.sizeDelta})));
         console.log("insert values", mutations.map(x => x.values));
         console.log("changes", changes);
         console.log("originalArr", originalArr.length, originalArr);
         console.log("arr", arr.length, arr);
         console.log("arrForDelta", arrForDelta.length, arrForDelta);
+
+
+        console.log(mutations.length);
+        try {
+            debugger;
+            // At mutation[259], the problem is created.
+            testGetChanges(originalArr.slice(), mutations.slice(0, 260), smallSplitFactor, "throw");
+        } catch(e) {
+            debugger;
+            console.log("threw again", e);
+        }
+
         debugger;
     }
 
@@ -124,11 +140,11 @@ function testGetChanges(arr: TestObj[], mutations: (ArrayMutation&{values: TestO
     //  The issue is that the insert index is off. It should be 1, but is 0.
     //  This is a probably an issue with boundary behavior
     //  Nope, it is an ordering issue with values
-    if(dontThrow) {
+    if(dontThrow === true) {
         try {
             ThrowIfNotImplementsData(arrForDelta, arr);
         } catch {
-            testGetChanges(originalArr, mutations, false);
+            testGetChanges(originalArr, mutations, smallSplitFactor, false);
         }
     } else {
         ThrowIfNotImplementsData(arrForDelta, arr);
@@ -165,38 +181,62 @@ describe("indexChanges", () => {
             testGetChanges(arr, [
                 { index: 1, sizeDelta: -1, values: [] },
                 { index: 1, sizeDelta: 1, values: [ { value: "aa" } ] }
-            ]);
+            ], true);
         });
     });
 
-
-    it("test basic", () => {
-        let time = Date.now();
-        console.log("test start");
+    function testScale(scale: number, rootCount = 1000 / (10 ** scale)) {
         wrapRandom(2451, () => {
-            for(let scale = 0; scale < 3; scale++) {
-                for(let i = 0; i < 10000 / (10 ** scale); i++) {
-                    g.loopIndex = i;
+            for(let i = 0; i < rootCount; i++) {
+                g.loopIndex = i;
 
-                    let size = Math.round((10 ** (scale + 0.5)) * (1 - (randFnc() - 0.5) * 0.1));
-                    size = Math.floor(10 ** (scale + 1) * (randFnc() * 0.9 + 0.1));
-                    
-                    //console.log("size", size);
-                    let arr = createTestArray(size);
-                    (randFnc as any)[nextTextSeqNum] += 10;
+                let size = Math.round((10 ** (scale + 0.5)) * (1 - (randFnc() - 0.5) * 0.1));
+                size = Math.floor(10 ** (scale + 1) * (randFnc() * 0.9 + 0.1));
+                
+                //console.log("size", size);
+                let arr = createTestArray(size);
+                (randFnc as any)[nextTextSeqNum] += 10;
 
-                    let mutations = new Array(size * 5).fill(0).map(x => createRandomMutation(size));
+                let mutations = new Array(size * 5).fill(0).map(x => createRandomMutation(size));
 
-                    try {
-                        testGetChanges(arr, mutations);
-                    } catch(e) {
-                        console.log({scale, i, size}, g.mutateIndex);
-                        throw e;
-                    }
+                try {
+                    testGetChanges(arr, mutations, true);
+                } catch(e) {
+                    console.log({scale, i, size}, g.mutateIndex);
+                    throw e;
                 }
             }
         });
-        time = Date.now() - time;
-        console.log(`test end ${time}`);
+    }
+
+    it("test small scale 0", () => {
+        testScale(0, 10);
+    });
+
+    it("test large scale 0", () => {
+        testScale(0);
+    });
+
+    it("test small scale 1", () => {
+        testScale(1, 1);
+    });
+    it("test small scale 2", () => {
+        testScale(2, 1);
+    });
+
+    it("test large scale 1", () => {
+        testScale(1);
+    });
+    it("test large scale 2", () => {
+        testScale(2);
+    });
+
+    it("list test", () => {
+        let length = 100;
+        let mutations: ArrayMutation[] = [];
+        mutations = new Array(length / 2).fill(0).map((x, i) => ({ index: i * 2, sizeDelta: -1 }));
+        mutations.push({ index: length / 2, sizeDelta: 10 });
+        debugger;
+        getChanges(length, mutations, false);
     });
 });
