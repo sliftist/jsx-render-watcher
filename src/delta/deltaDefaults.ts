@@ -1,5 +1,7 @@
-import { sort, unreachable } from "./lib/algorithms";
-import { LongestSequence } from "./lib/longestSequence";
+import { sort, unreachable } from "../lib/algorithms";
+import { LongestSequence } from "../lib/longestSequence";
+import { DeltaContext } from "./DeltaContext";
+import { getCombinedObjectHash } from "../identifer";
 
 // Any lookup with this key should satisfy the { [lookupDelta]: () => ReturnType<typeof GetCurLookupDelta> } interface
 export const lookupDelta = Symbol.for("lookupDelta");
@@ -9,6 +11,10 @@ export const lookupDelta = Symbol.for("lookupDelta");
 // NOTE: prevValue is in reference to the value in the previous run of the DeltaContext, not just the last write.
 export type KeyDeltaChanges<Value> = Map<string|number, { prevValue: Value|undefined, newValue: Value|undefined }>;
 
+// NOTE: This works with changes inside of a delta context BUT, it should be noted the delta returned will be from the last run
+//  up until the present. So if you delete a value in will show up in the delta, but all of the previous values will still also show up.
+//  This means you can't use it within a function to get changes in a loop, as you run. Because... that doesn't make any sense,
+//  and in that case the inner loop should just be a derived itself.
 // NOTE: There are two ways to implement this.
 //  1) If there is only one user, then every time this is called it can return the delta since the last call.
 //  2) If there are multiple users of the same lookup, then each can set a global flag indicating an identifier of the
@@ -69,6 +75,8 @@ export type ArrayDelta = {
 
     // Indexes of removes ordered from high to low, so removals don't break their own indexes
     //  If the number is < 0, it becomes the ~ of the value, and should push to the aux stack.
+    // ALSO! Every index that is < 0 MUST be inserted somewhere, it is not allowed to push it to the aux stack
+    //  and then not use it.
     removes: number[];
     // Insert. If the number < 0, it becomes ~ of the value.
     //  The values are sorted low to high, and are the indexes in the final array. The array itself
@@ -214,137 +222,4 @@ export function GetCurArrayDelta<Value>(arr: ArrayDeltaObj<Value>): ArrayDelta {
         inserts,
         auxOrder,
     };
-}
-
-
-
-// TODO: Use WeakRefs to do this better. Right now if a child is destructed but not a parent we won't know to get rid of the parent.
-//  (And we also store too many objects). With WeakRefs we can perfectly keep track of if any path is reachable, and if not, we can remove
-//  the entire path.
-type NestedWeakMap = WeakMap<object, { value: object; children: NestedWeakMap|undefined; }>;
-let nestedWeakMaps: NestedWeakMap = new WeakMap();
-function getCombinedObjectHash(objs: object[]): object {
-    let curMap = nestedWeakMaps;
-    for(let i = 0; i < objs.length; i++) {
-        let obj = objs[i];
-        let next = curMap.get(obj);
-        if(next === undefined) {
-            next = { value: Object.create(null), children: undefined };
-            curMap.set(obj, next);
-        }
-        if(i === objs.length - 1) {
-            return next.value;
-        }
-        if(next.children === undefined) {
-            next.children = new WeakMap();
-        }
-        curMap = next.children;
-    }
-    throw new Error(`Internal error, unreachable`);
-}
-
-
-export interface DeltaStateId<State extends DeltaState = any> {
-    startRun?: (state: State) => void;
-    finishRun?: (state: State) => void;
-}
-
-export interface DeltaState {
-    [key: string]: unknown;
-}
-
-export class DeltaContext<T = any> {
-
-    // TODO: Set<DeltaContext> should really be Set<WeakRef<DeltaContext>>
-    private static AllStates = new WeakMap<DeltaStateId, Set<DeltaContext>>();
-
-    private static curContext: DeltaContext[] = [];
-
-    // TODO: Should be Map<WeakRef<DeltaStateId>, WeakRef<DeltaState>>. This would mean if either the providers of
-    //  the dependencies (DeltaState) or the user (RunContext), the states can go away. Although, if the underlying
-    //  dependency we are getting a delta for goes away, it should probably trigger a change of the user of the dependency,
-    //  so WeakRefs aren't THAT important.
-    states = new Map<DeltaStateId, DeltaState>();
-    stateAccessedInRun = new Set<DeltaStateId>();
-
-    private disposed = false;
-    private inRunCode = false;
-
-    constructor(private code: () => T) { }
-
-
-    public static GetCurrent(): DeltaContext|undefined {
-        return DeltaContext.curContext[DeltaContext.curContext.length - 1];
-    }
-
-    public GetOrAddState<T extends DeltaState>(id: DeltaStateId | Function&DeltaStateId, defaultState: () => T): T {
-        if(!this.inRunCode) {
-            throw new Error(`DeltaContext accessed outside of RunCode`);
-        }
-        this.stateAccessedInRun.add(id);
-        if(!this.states.has(id)) {
-            let defState = defaultState();
-            this.states.set(id, defState);
-            if(id.startRun) id.startRun(defState);
-        }
-        return this.states.get(id) as T;
-    }
-
-    /** Used to prepare delta across all contexts. This is required, as opposed to polling, as usually it is not viable
-     *      to keep the deltas available forever, so they must be placed into the contexts that will use them,
-     *      and then disposed of by those contexts when they are done with them.
-     */
-    public static GetAllStates<State extends DeltaState>(id: DeltaStateId<State>): State[] {
-        let set = DeltaContext.AllStates.get(id);
-        if(!set) return [];
-        return Array.from(set.keys()).map(x => x.states.get(id)).filter((x): x is State => !!x);
-    }
-
-    public RunCode() {
-        if(this.disposed) {
-            throw new Error(`Disposed DeltaContext RunCode called`);
-        }
-        return this.runCode();
-    }
-    private runCode() {
-        this.inRunCode = true;
-        let prevAccessedState = this.stateAccessedInRun;
-        this.stateAccessedInRun = new Set();
-        DeltaContext.curContext.push(this);
-
-        for(let state of prevAccessedState) {
-            if(state.startRun) state.startRun(this.states.get(state));
-        }
-
-        try {
-            return this.code();
-        } finally {
-            this.inRunCode = false;
-            DeltaContext.curContext.pop();
-
-            for(let prevState of prevAccessedState) {
-                if(!(this.stateAccessedInRun.has(prevState))) {
-                    this.states.delete(prevState);
-                    DeltaContext.AllStates.get(prevState)?.delete(this);
-                }
-            }
-            for(let newState of this.stateAccessedInRun) {
-                if(!prevAccessedState.has(newState)) {
-                    if(!DeltaContext.AllStates.has(newState)) {
-                        DeltaContext.AllStates.set(newState, new Set());
-                    }
-                    DeltaContext.AllStates.get(newState)?.add(this);
-                }
-            }
-
-            for(let state of this.stateAccessedInRun) {
-                if(state.finishRun) state.finishRun(this.states.get(state));
-            }
-        }
-    }
-    public Dispose() {
-        this.code = (() => {}) as any;
-        this.RunCode();
-        this.disposed = true;
-    }
 }

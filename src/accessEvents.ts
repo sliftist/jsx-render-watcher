@@ -1,23 +1,26 @@
 import { UnionUndefined } from "./lib/misc";
 
 type WatchWriteCallbacks = {
-    write: (path: EyeTypes.Path2) => void;
-    writeKey: (parentPath: EyeTypes.Path2, childKey: PropertyKey, change: "add"|"remove") => void;
+    write: (hash: string) => void;
+    // To indicate a the in operator for a lookup eyeLookup[parentPath] has changed value (a there is a key where "key in lookup"
+    //  has changed it's boolean output).
+    writeKey: (parentPath: string) => void;
 };
 type WatchReadCallbacks = {
-    read: (path: EyeTypes.Path2) => void;
-    readKeys: (path: EyeTypes.Path2) => void;
+    read: (hash: string) => void;
+    readKeys: (hash: string) => void;
     readDelta?: (delta: ReadDelta) => void;
 };
 
 
 export type ReadDelta = {
+    // All keys are path.pathHash
     /** The same fullReads is passed each time, and so when the same fullReads is passed the delta
      *      of the last values is in readsAdded and readsRemoved.
      */
-    fullReads: Map<string, { path: EyeTypes.Path2; }>;
-    readsAdded: Map<string, EyeTypes.Path2>;
-    readsRemoved: Map<string, EyeTypes.Path2>;
+    fullReads: Set<string>;
+    readsAdded: Set<string>;
+    readsRemoved: Set<string>;
 };
 
 let watchCallbacksSeqNum = 0;
@@ -79,19 +82,23 @@ export function getReads<T>(
     }
 }
 
-export function registerReadAccess(path: EyeTypes.Path2) {
-    console.log(`Read`, path);
+export function registerReadAccess(hash: string) {
+    console.log(`Read`, hash);
     for(let callbacksList of readCallbacks) {
         let callbacks = callbacksList[callbacksList.length - 1];
-        callbacks.read(path);
+        callbacks.read(hash);
     }
 }
 
-export function registerKeysReadAccess(path: EyeTypes.Path2) {
-    console.log(`Read keys`, path);
+/** Called when Object.keys(parent) is called. Only registers an access to the children of an object,
+ *      so if you do Object.keys(obj.x), you should register a read access of [obj, "x"], and the keys of the object
+ *      at obj.x (they should be different hashes).
+ */
+export function registerKeysReadAccess(parentHash: string) {
+    console.log(`Read keys`, parentHash);
     for(let callbacksList of readCallbacks) {
         let callbacks = callbacksList[callbacksList.length - 1];
-        callbacks.readKeys(path);
+        callbacks.readKeys(parentHash);
     }
 }
 
@@ -102,8 +109,8 @@ export function registerDeltaReadAccess(delta: ReadDelta) {
             console.log(`Read delta keys`, delta.fullReads);
             callbacks.readDelta(delta);
         } else {
-            for(let [key, read] of delta.fullReads) {
-                registerReadAccess(read.path);
+            for(let key of delta.fullReads) {
+                registerReadAccess(key);
             }
         }
     }
@@ -114,23 +121,25 @@ export function registerDeltaReadAccess(delta: ReadDelta) {
 //      if(this.x === 0) { this.x = 1; this.x = 0; }
 //  We need to trigger the write on `this.x = 1`, but on `this.x = 0` we want to take back the write, as nothing really changed.
 //  - This will require some kind of writeCancel callback in our watch callbacks.
-export function registerWrite(path: EyeTypes.Path2) {
+export function registerWrite(hash: string) {
     for(let key in watchCallbacksLookup) {
         let pendingAccess = watchCallbacksLookup[key];
         try {
-            pendingAccess.write(path);
+            pendingAccess.write(hash);
         } catch(e) {
+            if(g.TEST) throw e;
             console.error(`write access callback threw an error`, e);
         }
     }
 }
 
-export function registerOwnKeysWrite(parentPath: EyeTypes.Path2, childKey: PropertyKey, change: "add"|"remove") {
+export function registerOwnKeysWrite(pathHash: string) {
     for(let key in watchCallbacksLookup) {
         let pendingAccess = watchCallbacksLookup[key];
         try {
-            pendingAccess.writeKey(parentPath, childKey, change);
+            pendingAccess.writeKey(pathHash);
         } catch(e) {
+            if(g.TEST) throw e;
             console.error(`write access callback threw an error`, e);
         }
     }

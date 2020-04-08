@@ -1,0 +1,304 @@
+import { eye0_pure, EyeType, eye, eye1_replace } from "./eye";
+import { derived, derivedTotalReads, derivedRaw, DisposeSymbol, globalAliveDerivedCount, onDerivedsSettled } from "./derived";
+import { GetCurLookupDelta, GetCurArrayDelta, ArrayDelta } from "./delta/deltaDefaults";
+import { ThrowIfNotImplementsData } from "pchannel";
+import { getObjIdentifier } from "./identifer";
+import { deltaArrayMap } from "./delta/deltaMap";
+
+
+//todonext
+//  We need proper maps functions, that allow access of nested values, etc
+//  and track those nested or further derived values via registerDeltaReadAccess,
+//  so derived doesn't need to iterate over all values to find removed values every time...
+//todonext
+// Set support in proxy
+
+let state: { [key: string]: number } = eye0_pure(Object.create(null));
+let lastSum = 0;
+let eyeDerived = derived(function (this: any) {
+    let changes = GetCurLookupDelta(state);
+    for(let { prevValue, newValue } of changes.values()) {
+        lastSum -= prevValue || 0;
+        lastSum += newValue || 0;
+    }
+}) as any as EyeType<void>;
+
+describe("derived delta", () => {
+    it("lookup basic", async () => {
+        let state: { [key: string]: number } = eye0_pure(Object.create(null));
+        state["a"] = 1;
+        state["b"] = 2;
+        for(let i = 0; i < 100; i++) {
+            state["v" + i] = 0;
+        }
+
+        let baseReads = derivedTotalReads.value;
+
+        let lastSumLoopCount = 0;
+        let lastSum = 0;
+        derived(function (this: any) {
+            lastSumLoopCount = 0;
+            let changes = GetCurLookupDelta(state);
+            for(let { prevValue, newValue } of changes.values()) {
+                lastSumLoopCount++;
+                lastSum -= prevValue || 0;
+                lastSum += newValue || 0;
+            }
+        });
+
+        ThrowIfNotImplementsData(lastSum, 3);
+        baseReads = derivedTotalReads.value - baseReads;
+        console.log(lastSumLoopCount, baseReads);
+
+
+        let readsForChanges = derivedTotalReads.value;
+
+        state["c"] = 1;
+        await Promise.resolve();
+        ThrowIfNotImplementsData(lastSum, 4);
+        ThrowIfNotImplementsData(lastSumLoopCount, 1);
+        lastSumLoopCount = 0;
+
+        delete state["c"];
+        await Promise.resolve();
+        ThrowIfNotImplementsData(lastSum, 3);
+        ThrowIfNotImplementsData(lastSumLoopCount, 1);
+        lastSumLoopCount = 0;
+
+        state["d"] = 5;
+        await Promise.resolve();
+        ThrowIfNotImplementsData(lastSum, 8);
+        ThrowIfNotImplementsData(lastSumLoopCount, 1);
+        lastSumLoopCount = 0;
+        
+        state["d"] = 7;
+        await Promise.resolve();
+        ThrowIfNotImplementsData(lastSumLoopCount, 1);
+        ThrowIfNotImplementsData(lastSum, 10);
+
+        readsForChanges = derivedTotalReads.value - readsForChanges;
+
+        // There have to be some read changes! Of there are none, then we must not be tracking changes properly!
+        ThrowIfNotImplementsData(readsForChanges > 0, true);
+
+        console.log(readsForChanges, baseReads);
+
+        // We should have far fewer reads when just makes a few changes to the lookup than when we
+        //  had to create the entire lookup.
+        ThrowIfNotImplementsData(readsForChanges < baseReads / 10, true);
+    });
+
+    it("array basic", async () => {
+        let arr: number[] = eye(Array(100).fill(0).map((x, i) => i));
+
+        derivedTotalReads.value = 0;
+        let baseReads = derivedTotalReads.value;
+
+        let loops = 0;
+        let lastSum = 0;
+        let prevValues: number[] = [];
+        derived(() => {
+            let delta = GetCurArrayDelta(arr);
+            for(let removeIndex of delta.removes) {
+                if(removeIndex < 0) removeIndex = ~removeIndex;
+                lastSum -= prevValues[removeIndex];
+                prevValues.splice(removeIndex, 1);
+                loops++;
+            }
+            for(let insertIndex of delta.inserts) {
+                if(insertIndex < 0) insertIndex = ~insertIndex;
+                let newValue = arr[insertIndex];
+                prevValues.splice(insertIndex, 0, newValue);
+                lastSum += newValue;
+                loops++;
+            }
+        });
+
+        ThrowIfNotImplementsData(lastSum, 4950);
+        console.log(lastSum);
+        console.log(derivedTotalReads.value);
+
+        baseReads = derivedTotalReads.value - baseReads;
+
+
+        let readsForChanges = derivedTotalReads.value;
+        loops = 0;
+
+        arr[0] = 100;
+        await Promise.resolve();
+        ThrowIfNotImplementsData(lastSum, 5050);
+
+
+        arr.splice(50, 1);
+        await Promise.resolve();
+        ThrowIfNotImplementsData(lastSum, 5000);
+
+
+        readsForChanges = derivedTotalReads.value - readsForChanges;
+
+
+        console.log(readsForChanges, baseReads);
+        // Making a few changes should be require A LOT fewer reads than 
+        ThrowIfNotImplementsData(readsForChanges < baseReads / 10, true);
+
+        // We should have few loops, and not loop over everything.
+        ThrowIfNotImplementsData(loops < 10, true);
+    });
+
+
+
+    it("array object", async () => {
+        let derivedAdded = globalAliveDerivedCount;
+
+        let arrRaw: {i: number}[] = Array(100).fill(0).map((x, i) => ({i}));
+        let arr = eye0_pure(arrRaw);
+
+        let baseReads = derivedTotalReads.value;
+
+
+        let loops = 0;
+        let lastSum = 0;
+        
+        let prevValues: number[] = [];
+        let numberValues = deltaArrayMap(arr, x => x.i);
+
+        let lastDelta!: ArrayDelta;
+        //debugger;
+        let rootDerived = derived(() => {
+            let delta = lastDelta = GetCurArrayDelta(numberValues);
+            for(let removeIndex of delta.removes) {
+                if(removeIndex < 0) removeIndex = ~removeIndex;
+                lastSum -= prevValues[removeIndex];
+                prevValues.splice(removeIndex, 1);
+                loops++;
+            }
+            for(let insertIndex of delta.inserts) {
+                if(insertIndex < 0) insertIndex = ~insertIndex;
+
+                let value = numberValues[insertIndex];
+
+                lastSum += value;
+                
+                prevValues.splice(insertIndex, 0, value);
+
+                loops++;
+            }
+        });
+
+        ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
+        console.log(lastSum);
+        console.log(derivedTotalReads.value);
+
+        baseReads = derivedTotalReads.value - baseReads;
+
+
+        let readsForChanges = derivedTotalReads.value;
+        loops = 0;
+
+
+        arr[0] = { i: 101 };
+        await onDerivedsSettled();
+        ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
+
+
+        arr[1].i = 0;
+        await onDerivedsSettled();
+        ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
+
+
+        arr.splice(50, 1);
+        await onDerivedsSettled();
+        ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
+
+
+        readsForChanges = derivedTotalReads.value - readsForChanges;
+
+
+        // Making a few changes should be require A LOT fewer reads than 
+        ThrowIfNotImplementsData(readsForChanges < baseReads / 10, true);
+
+        // We should have few loops, and not loop over everything.
+        ThrowIfNotImplementsData(loops < 10, true);
+
+        console.log({ loops, readsForChanges, baseReads });
+
+
+        rootDerived[DisposeSymbol]();
+        numberValues[DisposeSymbol]();
+
+
+        derivedAdded = globalAliveDerivedCount - derivedAdded;
+        // We should leak any derived.
+        ThrowIfNotImplementsData(derivedAdded, 0);
+    });
+
+    it("deltaMap attaches to parent properly", async () => {
+        let baseReads = derivedTotalReads.value;
+
+        let values = eye0_pure(Array(100).fill(0).map((x, i) => i));
+
+        let useDerived = eye0_pure({ value: true });
+        let changeValue = eye0_pure({ value: 0 });
+
+        let output = derived(() => {
+            if(!useDerived.value) return [];
+            changeValue.value;
+            return deltaArrayMap(values, i => i * 10);
+        });
+
+        baseReads = derivedTotalReads.value - baseReads;
+
+
+        {
+            debugger;
+            let readsForChange = derivedTotalReads.value;
+            values.splice(~~(values.length / 2), 1);
+            changeValue.value++;
+            await onDerivedsSettled();
+            debugger;
+            readsForChange = derivedTotalReads.value - readsForChange;
+            
+            console.log(readsForChange, baseReads);
+
+            // If too many reads occur, it means the delta isn't being reused, and a new one is created per run.
+            ThrowIfNotImplementsData(readsForChange < baseReads / 10, true);
+        }
+
+
+        // Stop using the deltaArrayMap
+        useDerived.value = false;
+        await onDerivedsSettled();
+
+        // Once we stop using the delta array map, it should go away, and not trigger any future reads.
+        {
+            let readForChangeWeArentWatching = derivedTotalReads.value;
+
+            values.splice(~~(values.length / 2), 1);
+            await onDerivedsSettled();
+            
+            readForChangeWeArentWatching = derivedTotalReads.value - readForChangeWeArentWatching;
+
+            console.log(readForChangeWeArentWatching);
+            ThrowIfNotImplementsData(readForChangeWeArentWatching, 0);
+        }
+    });
+
+    // TODO: After we support the above regular map case, support the case of a mapped inside of a derived, which
+    //  requires making assumptions that the map value is completely dependent on the mapFnc.toString()
+    //  - OH! I mean, make the derived have a unique value and some kind of cache based on the parent derived?
+    //      - So, if the same parent derived calls it, it will use the same child derived? Yeah... that sounds good.
+    //  - Which is an invalid assumption if any variables are closed upon, so... then also add something to parse
+    //      the javascript of the function to determine what it closes on, and add the code to allow checking for those
+    //      values.
+    // And then make sure our dispose works properly (I think I disabled it), so when the derived is no longer accessed in
+    //  the parent derived, it disposes properly (very important, to prevent the function rerunning forever).
+    //todonext
+    // Add a failing test for for deltaArrayMap, that fails because of closure value changes. And then... add a javascript
+    //  parser and determine all closed variables.
+    //  - Then... maybe add a warning for variables closed upon that don't look like imports? We can be fairly strict,
+    //      even disallowing everything, but then we should make it possible to specify which variables you want to provide
+    //      to the function, as arguments?
+    //  - Then add a helper function to trick the user into calling eval, so we can check their scope to see if the closed
+    //      upon variables have changed... allowing us to re-evaluate the function appropriately, accessing the new
+    //      closed upon variables, making variable closures not a major problem.
+});

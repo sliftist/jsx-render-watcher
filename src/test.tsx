@@ -1,26 +1,11 @@
 import * as preact from "preact";
 import * as React from "react";
-import { eye, EyeRawValue, EyeLevel, eye0_pure, GetUniqueRootPath, EyePath, EyeType } from "./eye";
-import { derivedRaw, derived, derivedTriggerDiag } from "./derived";
-import { g } from "./lib/misc";
-import { launchDebugUtils } from "./debugUtils/exposeDebug";
-import { DeltaContext, DeltaStateId, DeltaState, GetCurLookupDelta } from "./delta";
-import { getRootKey, getChildPath } from "./lib/path";
-import { registerOwnKeysWrite, registerKeysReadAccess, registerReadAccess, registerWrite, registerDeltaReadAccess } from "./accessEvents";
-
-import { ThrowIfNotImplementsData } from "pchannel";
-
-import { render } from "preact-render-to-string";
-import { MountVanillaComponents } from "./mount2Vanilla";
-import { ComponentInstanceClass } from "./mount2";
-import { getChanges } from "./lib/indexChanges";
-
+import { eye, EyeLevel } from "./eye";
+import { derivedRaw, derived } from "./derived";
 
 import "./lib/testHelper_g";
-import "./lib/SkipList.test";
-import "./lib/indexChanges.test";
-
-
+import "./derivedDelta.test";
+//import "./lib/indexChanges.test";
 
 
 
@@ -121,7 +106,7 @@ export class TodoList extends preact.Component<{list: TodoListType}, {}> {
                 </div>
             </div>
         );
-    }, { niceName: "TodoList.render", thisContextEyeLevel: EyeLevel.eye3_replace });
+    }, "TodoList.render", undefined, EyeLevel.eye1_replace);
 }
 
 export class TestMain extends preact.Component<{ y: number }, {}> {
@@ -159,7 +144,7 @@ export class TestMain extends preact.Component<{ y: number }, {}> {
         derived(() => {
             let dataJSON = JSON.stringify(this.data);
             localStorage.setItem("todolist", dataJSON);
-        }, "dataToLocalStorage", undefined, { singleton: true });
+        }, "dataToLocalStorage");
     }
 
     public render = derivedRaw(function(this: TestMain) {
@@ -172,341 +157,37 @@ export class TestMain extends preact.Component<{ y: number }, {}> {
                 })}
             </div>
         );
-    }, { niceName: "TestMain.render", thisContextEyeLevel: EyeLevel.eye3_replace });
+    }, "TestMain.render", undefined, EyeLevel.eye1_replace);
 }
 
 
+
+
 /*
-(async () => {
-    await launchDebugUtils();
-    let obj = eye({ x: 0 });
+{
+    let node = document.createElement("div");
 
-    derived(() => {
-        obj.x;
-        return Object.keys(obj);
-    }, "derivedTest");
+    MountVanillaComponents(
+        <div>test</div>,
+        node,
+        false
+    );
 
-    derived(() => {
-        obj.x;
-        return Object.keys(obj);
-    }, "derivedTest2");
+    console.log(node.innerHTML);
 
-
-    {
-        let lookupRaw: { [key: string]: number } = Object.create(null);
-
-    }
-})();
+    //let y = <Test />;
+    //console.log(y);
+    //debugger;
+    //todonext;
+    // Now... we need to write our own dom mounter, that is somewhat delta aware (maybe not of GetCurLookupDelta,
+    //  but perhaps using something that only uses modifications to JSX, although... just using a symbol that returns
+    //  the delta... is probably fine. Although we would hardcode the delta in the JSX object? That way it doesn't
+    //  have to use DeltaContext?
+    //  - Or... we COULD use DeltaContext, idk, something like that.
+    // And also, we already wrote a dom mounter, so just take a lot of the code from that...
+}
 */
 
-
-
-(async () => {
-    let deltaId: DeltaStateId<OurDeltaState> = {
-        startRun(state) {
-            if(state.curDelta) throw new Error(`Internal error, startRun called before finishRun called`);
-            state.curDelta = state.pendingDelta;
-            state.pendingDelta = {
-                firstDelta: false,
-                changes: Object.create(null),
-            };
-        },
-        finishRun(state) {
-            state.curDelta = undefined;
-        }
-    };
-
-    let statePath = GetUniqueRootPath("stateTest");
-    let state: { [key: string]: number } = Object.create(null);
-    function triggerChange(key: string) {
-        let states = DeltaContext.GetAllStates(deltaId) as OurDeltaState[];
-        for(let deltaState of states) {
-            let { curDelta, pendingDelta } = deltaState;
-            applyChange(pendingDelta);
-            if(curDelta) applyChange(curDelta);
-            function applyChange(delta: Delta) {
-                if(!(key in delta.changes)) {
-                    delta.changes[key] = {
-                        prevValue: key in state ? state[key] : undefined
-                    };
-                }
-            }
-        }
-    }
-    function addChangeState(key: string, value: number) {
-        if(!(key in state)) {
-            registerOwnKeysWrite(statePath, key, "add");
-        }
-        if(state[key] !== value) {
-            registerWrite(getChildPath(statePath, key));
-        }
-        triggerChange(key);
-        state[key] = value;
-    }
-    function removeState(key: string) {
-        if(key in state) {
-            registerOwnKeysWrite(statePath, key, "remove");
-            registerWrite(getChildPath(statePath, key));
-        }
-        triggerChange(key);
-        delete state[key];
-    }
-
-    interface Delta {
-        firstDelta: boolean;
-        changes: {
-            [key: string]: {
-                prevValue: number|undefined;
-            }
-        }
-    }
-    interface OurDeltaState extends DeltaState {
-        pendingDelta: Delta;
-        curDelta: Delta|undefined;
-    };
-    function getDefaultDelta(): OurDeltaState {
-        return {
-            pendingDelta: {
-                firstDelta: true,
-                changes: Object.create(null),
-            },
-            curDelta: undefined,
-        };
-    }
-
-    function getDelta(): {
-        fullState: { [key: string]: number };
-        changes: Delta["changes"]
-    } {
-        registerKeysReadAccess(statePath);
-
-        // registerDeltaReadAccess
-        let deltaContext = DeltaContext.GetCurrent();
-        if(deltaContext) {
-            let deltaState = deltaContext.GetOrAddState(deltaId, getDefaultDelta);
-            let { curDelta } = deltaState;
-            if(!curDelta) throw new Error(`Internal error, should be in current delta`);
-
-            if(!curDelta.firstDelta) {
-                return {
-                    fullState: state,
-                    changes: curDelta.changes,
-                }
-            }
-        }
-
-        let prevValues: Delta["changes"] = Object.create(null);
-        for(let key in state) {
-            prevValues[key] = { prevValue: undefined };
-        }
-
-        return {
-            fullState: state,
-            changes: prevValues,
-        };
-    }
-
-    addChangeState("a", 1);
-    addChangeState("b", 2);
-    /*
-    fullReads: Map<string, EyeTypes.Path2>;
-    readsAdded: EyeTypes.Path2[];
-    readsRemoved: EyeTypes.Path2[];
-    registerDeltaReadAccess()
-    */
-
-    let lastSumLoopCount = 0;
-    function createSumer() {
-        interface SumerDeltaState extends DeltaState {
-            sum: number;
-            fullReads: Map<string, { path: EyeTypes.Path2 }>;
-        }
-        let deltaId: DeltaStateId<SumerDeltaState> = { };
-
-        return function () {
-            let sum = 0;
-            let deltaContext = DeltaContext.GetCurrent();
-            let deltaState = deltaContext?.GetOrAddState(deltaId, () => ({ sum: 0, fullReads: new Map() } as SumerDeltaState));
-            if(deltaState) {
-                sum = deltaState.sum;
-            }
-
-            let { fullState, changes } = getDelta();
-
-            if(deltaState) {
-                let readsAdded: Map<string, EyeTypes.Path2> = new Map();
-                let readsRemoved: Map<string, EyeTypes.Path2> = new Map();
-                for(let key in changes) {
-                    if(key in state) {
-                        let path = getChildPath(statePath, key);
-                        if(!deltaState.fullReads.has(path.pathHash)) {
-                            deltaState.fullReads.set(path.pathHash, {path});
-                            readsAdded.set(path.pathHash, path);
-                        }
-                    } else {
-                        let path = getChildPath(statePath, key);
-                        if(deltaState.fullReads.has(path.pathHash)) {
-                            deltaState.fullReads.delete(path.pathHash);
-                            readsRemoved.set(path.pathHash, path);
-                        }
-                    }
-                }
-                registerDeltaReadAccess({
-                    fullReads: deltaState.fullReads,
-                    readsAdded,
-                    readsRemoved,
-                });
-            } else {
-                for(let key in changes) {
-                    if(key in state) {
-                        registerReadAccess(getChildPath(statePath, key));
-                    }
-                }
-            }
-            
-            
-            lastSumLoopCount = 0;
-            for(let key in changes) {
-                let { prevValue } = changes[key];
-                if(prevValue !== undefined) {
-                    sum -= prevValue;
-                }
-                if(key in fullState) {
-                    sum += fullState[key];
-                }
-                lastSumLoopCount++;
-            }
-
-            if(deltaState) {
-                deltaState.sum = sum;
-            }
-
-            return sum;
-        };
-    }
-
-    let context = new DeltaContext(createSumer());
-
-    console.warn(`Start explicit test`);
-
-    for(let i = 0; i < 100; i++) {
-        addChangeState("v" + i, 0);
-    }
-
-    ThrowIfNotImplementsData(context.RunCode(), 3);
-
-    addChangeState("c", 1);
-    ThrowIfNotImplementsData(context.RunCode(), 4);
-
-    removeState("a");
-    ThrowIfNotImplementsData(context.RunCode(), 3);
-
-    addChangeState("c", 10);
-    ThrowIfNotImplementsData(context.RunCode(), 12);
-    console.warn(`End explicit test`);
-
-
-
-    {
-        console.warn(`Start derived test`);
-        let sumer = createSumer();
-        let lastSum = 0;
-        let eyeDerived = derived(function () {
-            lastSum = sumer();
-        }) as EyeType<void>;
-        let eyePath = eyeDerived[EyePath];
-        ThrowIfNotImplementsData(lastSum, 12);
-        console.log(`Took loops ${lastSumLoopCount}, last watched reads ${derivedTriggerDiag[eyePath.pathHash].lastWatchedReads}`);
-
-        addChangeState("c", 1);
-        await Promise.resolve();
-        ThrowIfNotImplementsData(lastSum, 3);
-        console.log(`Took loops ${lastSumLoopCount}, last watched reads ${derivedTriggerDiag[eyePath.pathHash].lastWatchedReads}`);
-
-        removeState("c");
-        await Promise.resolve();
-        ThrowIfNotImplementsData(lastSum, 2);
-        console.log(`Took loops ${lastSumLoopCount}, last watched reads ${derivedTriggerDiag[eyePath.pathHash].lastWatchedReads}`);
-
-        addChangeState("d", 5);
-        await Promise.resolve();
-        ThrowIfNotImplementsData(lastSum, 7);
-        console.log(`Took loops ${lastSumLoopCount}, last watched reads ${derivedTriggerDiag[eyePath.pathHash].lastWatchedReads}`);
-
-        console.warn(`end derived test`);
-    }
-
-    {
-        console.warn(`Start eye test`);
-
-
-        let rawState: { [key: string]: number } = Object.create(null);
-        let state = eye0_pure(rawState);
-        state["a"] = 1;
-        state["b"] = 2;
-        for(let i = 0; i < 100; i++) {
-            state["v" + i] = 0;
-        }
-
-        let lastSum = 0;
-        let eyeDerived = derived(function (this: any) {
-            lastSumLoopCount = 0;
-            let changes = GetCurLookupDelta(state);
-            for(let { prevValue, newValue } of changes.values()) {
-                lastSumLoopCount++;
-                lastSum -= prevValue || 0;
-                lastSum += newValue || 0;
-            }
-        }) as EyeType<void>;
-
-        
-
-        let eyePath = eyeDerived[EyePath];
-        ThrowIfNotImplementsData(lastSum, 3);
-        console.log(`Took loops ${lastSumLoopCount}, last watched reads ${derivedTriggerDiag[eyePath.pathHash].lastWatchedReads}`);
-
-        state["c"] = 1;
-        await Promise.resolve();
-        ThrowIfNotImplementsData(lastSum, 4);
-
-        delete state["c"];
-        await Promise.resolve();
-        ThrowIfNotImplementsData(lastSum, 3);
-        console.log(`Took loops ${lastSumLoopCount}, last watched reads ${derivedTriggerDiag[eyePath.pathHash].lastWatchedReads}`);
-
-
-        state["d"] = 5;
-        await Promise.resolve();
-        ThrowIfNotImplementsData(lastSum, 8);
-        console.log(`Took loops ${lastSumLoopCount}, last watched reads ${derivedTriggerDiag[eyePath.pathHash].lastWatchedReads}`);
-
-
-        console.warn(`end eye test`);
-    }
-
-    {
-        let node = document.createElement("div");
-
-        MountVanillaComponents(
-            <div>test</div>,
-            node,
-            false
-        );
-
-        console.log(node.innerHTML);
-
-        //let y = <Test />;
-        //console.log(y);
-        //debugger;
-        //todonext;
-        // Now... we need to write our own dom mounter, that is somewhat delta aware (maybe not of GetCurLookupDelta,
-        //  but perhaps using something that only uses modifications to JSX, although... just using a symbol that returns
-        //  the delta... is probably fine. Although we would hardcode the delta in the JSX object? That way it doesn't
-        //  have to use DeltaContext?
-        //  - Or... we COULD use DeltaContext, idk, something like that.
-        // And also, we already wrote a dom mounter, so just take a lot of the code from that...
-    }
-})();
 
 
 

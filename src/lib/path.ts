@@ -112,7 +112,11 @@ export function definePathSymbolName(symbol: symbol, id: string) {
     symbolReverseLookup[id] = symbol;
 }
 
-function getKeyHash(key: PropertyKey) {
+export function joinHashes(rootHash: string, childHash: string) {
+    return rootHash + pathPartSuffix + childHash;
+}
+
+export function getKeyHash(key: PropertyKey) {
     let typeText: string = typeof key;
     if(typeText === "string") {
         typeText = "";

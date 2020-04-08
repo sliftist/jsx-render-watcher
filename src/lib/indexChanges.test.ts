@@ -1,5 +1,5 @@
-import { ArrayDelta } from "../delta";
-import { ArrayMutation, getChanges } from "./indexChanges";
+import { ArrayDelta } from "../delta/deltaDefaults";
+import { ArrayMutation, getChanges, MutationList, addDeltaMoves, AATreeArrayGetChanges } from "./indexChanges";
 import { ThrowIfNotImplementsData, g } from "pchannel";
 
 import { MersenneTwister19937 } from "random-js";
@@ -112,6 +112,21 @@ function testGetChanges(arr: TestObj[], mutations: (ArrayMutation&{values: TestO
     }
 
     let changes = getChanges(originalArr.length, mutations, smallSplitFactor);
+
+    let changes2 = AATreeArrayGetChanges(originalArr.length, mutations);
+
+    ThrowIfNotImplementsData(changes.auxOrder.length, changes2.auxOrder.length);
+    ThrowIfNotImplementsData(changes.removes.length, changes2.removes.length);
+    ThrowIfNotImplementsData(changes.inserts.length, changes2.inserts.length);
+
+    for(let i = 0; i < changes.removes.length; i++) {
+        ThrowIfNotImplementsData(changes.removes[i], changes2.removes[i]);
+    }
+    for(let i = 0; i < changes.inserts.length; i++) {
+        ThrowIfNotImplementsData(changes.inserts[i], changes2.inserts[i]);
+    }
+    
+
     applyArrayDelta(changes, arrForDelta, arr);
 
     if(dontThrow === false) {
@@ -122,12 +137,16 @@ function testGetChanges(arr: TestObj[], mutations: (ArrayMutation&{values: TestO
         console.log("arr", arr.length, arr);
         console.log("arrForDelta", arrForDelta.length, arrForDelta);
 
+        debugger;
 
         console.log(mutations.length);
         try {
-            debugger;
-            // At mutation[259], the problem is created.
-            testGetChanges(originalArr.slice(), mutations.slice(0, 260), smallSplitFactor, "throw");
+            console.log(g.curTestName);
+            console.log(g.loopIndex);
+            console.log(g.mutateIndex);
+            //debugger;
+            g.breakOnThisMutateIndex = 1;
+            testGetChanges(originalArr.slice(), mutations.slice(0, 2), smallSplitFactor, "throw");
         } catch(e) {
             debugger;
             console.log("threw again", e);
@@ -213,13 +232,18 @@ describe("indexChanges", () => {
         testScale(0, 10);
     });
 
+    /*
     it("test large scale 0", () => {
         testScale(0);
     });
+    */
 
+    /*
     it("test small scale 1", () => {
         testScale(1, 1);
     });
+    */
+    /*
     it("test small scale 2", () => {
         testScale(2, 1);
     });
@@ -230,13 +254,40 @@ describe("indexChanges", () => {
     it("test large scale 2", () => {
         testScale(2);
     });
+    */
 
     it("list test", () => {
         let length = 100;
         let mutations: ArrayMutation[] = [];
         mutations = new Array(length / 2).fill(0).map((x, i) => ({ index: i * 2, sizeDelta: -1 }));
         mutations.push({ index: length / 2, sizeDelta: 10 });
-        debugger;
         getChanges(length, mutations, false);
+    });
+});
+
+describe("addDeltaMoves", () => {
+    it("basic", () => {
+        let list = Array(100).fill(0).map((x, i) => i);
+        let mutations = new MutationList(list.length);
+
+        let prevOrder = list.slice();
+
+        let index = 10;
+        let count = 10;
+        let elements = list.splice(index, count);
+        list.splice(-index, 0, ...elements);
+
+        mutations.addMutation(index, -count);
+        mutations.addMutation(-index, count);
+
+
+        let delta = mutations.getDelta();
+        addDeltaMoves(delta, prevOrder, list);
+
+        ThrowIfNotImplementsData(delta, {
+            auxOrder: [ 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 ],
+            inserts: [ -81, -82, -83, -84, -85, -86, -87, -88, -89, -90 ],
+            removes: Array(10).fill(0).map((x, i) => i + index).reverse().map(x => ~x)
+        });
     });
 });

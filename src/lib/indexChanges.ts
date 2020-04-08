@@ -1,7 +1,7 @@
-import { ArrayDelta } from "../delta";
-import { SkipList, linkedListToList } from "./SkipList";
+import { ArrayDelta } from "../delta/deltaDefaults";
 import { sort } from "./algorithms";
 import { g } from "pchannel";
+import { AATreeArray } from "./AATreeArray";
 
 //todonext;
 //  Oh wait... for our index delta problem... we can just keep track of our array of changes as ranges,
@@ -35,53 +35,86 @@ export type ArrayMutation = {
 //  would let us store a sorted list of the auxStack, which we could then use to map a Map, which would then let
 //  us do moves as well.
 
-g.linkedListToList = linkedListToList;
 
-//todonext;
-// Okay, make this a class, that takes mutations one at a time? And then can finalize the output at any time,
-//  BUT, also takes an arrNew and arrPrev when finalizating the output, which it uses to generate moves.
-//  We should probably write a test or two for moves as well...
+type Range = {
+    state: "unchanged"|"inserted";
+    originalIndex: number;
+};
+type RangeIndex = {
+    size: number;
+};
+type RangeObj = {
+    value: Range;
+    sumIncluded: RangeIndex;
+}
+class RangeList {
+    list: RangeObj[] = [];
+    public mutateSumRange(searchStart: RangeIndex, searchEnd: RangeIndex, mutate: (before: RangeIndex, values: RangeObj[]) => RangeObj[]): void {
+        let { list } = this;
 
-/** Mutations should include deletes, inserts AND sets (and of course, in order they were originally applied). */
-export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[], smallSplitFactor: boolean): ArrayDelta {
-    type Range = {
-        state: "unchanged"|"inserted";
-        originalIndex: number;
-    };
-    type RangeIndex = {
-        size: number;
-    };
+        // We are doing something of a two range overlap here. As in, we are looking over values
+        //  in the list, which are ranges, and we want to match against a range. So this is a bet cumbersome,
+        //  and makes some assumptions about the ranges (that there are no gaps), etc.
 
-    let sumList = new SkipList<Range, RangeIndex>(
-        (lhs, rhs) => ({ size: lhs.size + rhs.size }),
-        (lhs, rhs) => lhs.sumBefore.size - rhs.sumBefore.size,
-        smallSplitFactor ? ({ splitThreshold: 4, joinThreshold: 2 }) : undefined
-    );
+        let values: RangeObj[] = [];
 
-    sumList.addNode({ state: "unchanged", originalIndex: 0 }, { size: arrayOriginalSize }, { size: 0 });
+        let listIndex = 0;
+        let pos = 0;
+        while(listIndex < list.length) {
+            let { size } = list[listIndex].sumIncluded;
+            if(pos + size > searchStart.size) break;
+            pos += size;
+            listIndex++;
+        }
 
-    let deletions: {
+        let posStart = pos;
+        let listStartIndex = listIndex;
+
+        while(listIndex < list.length) {
+            let listObj = list[listIndex++];
+            pos += listObj.sumIncluded.size;
+            values.push(listObj);
+            if(pos >= searchEnd.size) break;
+        }
+
+        let newValues = mutate({ size: posStart }, values.slice());
+
+        list.splice(listStartIndex, values.length, ...newValues);
+    }
+    public getAllNodes() {
+        return this.list;
+    }
+    public getSize() {
+        return this.list.reduce((a, b) => a + b.sumIncluded.size, 0);
+    }
+}
+
+export class MutationList {
+    rangeList = new RangeList();
+
+    deletions: {
         originalIndex: number;
         size: number;
     }[] = [];
 
-    for(let i = 0; i < mutations.length; i++) {
-        g.mutateIndex = i;
+    public constructor(arrayOriginalSize: number) {
+        this.rangeList.mutateSumRange({size: 0}, { size: 0 }, () => [{ value: { state: "unchanged", originalIndex: 0 }, sumIncluded: { size: arrayOriginalSize } }]);
+    }
 
-        if(g.curTestName === "test large scale 0" && g.mutateIndex === 42 && g.loopIndex === 20) {
-            debugger;
+    public addMutation(mutationIndex: number, mutationDelta: number): void {
+        let size = this.rangeList.getSize();
+        if(mutationIndex < 0) {
+            return this.addMutation(mutationIndex + size, mutationDelta);
         }
+        if(mutationDelta === 0) return;
+        let sumList = this.rangeList;
+        let { deletions } = this;
 
-        let mutation = mutations[i];
-        if(mutation.index < 0) {
-            throw new Error(`Index should not be before the start of the array`);
-        }
-        if(mutation.sizeDelta === 0) continue;
-        if(mutation.sizeDelta > 0) {
-            let insertedRange = { value: { originalIndex: -1, state: "inserted" } as Range, sumIncluded: { size: mutation.sizeDelta } };
+        if(mutationDelta > 0) {
+            let insertedRange = { value: { originalIndex: -1, state: "inserted" } as Range, sumIncluded: { size: mutationDelta } };
             sumList.mutateSumRange(
-                { size: mutation.index },
-                { size: mutation.index },
+                { size: mutationIndex },
+                { size: mutationIndex },
                 (valuesStart, values) => {
                     if(values.length === 0) {
                         return [insertedRange];
@@ -89,7 +122,7 @@ export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]
                         let value = values[0];
                         let index = valuesStart?.size || 0;
                         let { originalIndex, state } = value.value;
-                        let beforeSize = mutation.index - index;
+                        let beforeSize = mutationIndex - index;
                         let afterSize = value.sumIncluded.size - beforeSize;
                         values = [];
                         if(beforeSize > 0) {
@@ -117,8 +150,8 @@ export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]
                 }
             );
         } else {
-            let deleteSize = -mutation.sizeDelta;
-            let deleteStart = mutation.index;
+            let deleteSize = -mutationDelta;
+            let deleteStart = mutationIndex;
             let deleteEnd = deleteStart + deleteSize;
 
             // BUG: It is adding the before sum twice when we get to the one before values? So it shouldn't add it twice,
@@ -131,6 +164,7 @@ export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]
 
                     let indexStart = valuesStart?.size || 0;
                     if(indexStart > deleteStart) {
+                        debugger;
                         throw new Error(`Internal error, the mutation was before the first range matched, but the ranges should go to index 0, and the mutation should be at >= 0, so... this is impossible`);
                     }
 
@@ -173,45 +207,196 @@ export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[]
                 }
             );
         }
-
-        //console.log(linkedListToList(sumList.valueRoot).map(x => ({ ...x.value, size: x.sumIncluded.size })));
     }
+    public getDelta(): ArrayDelta {
+        let sumList = this.rangeList;
+        let { deletions } = this;
 
-    let delta: ArrayDelta = {
-        auxOrder: [],
-        inserts: [],
-        removes: [],
-    };
-    //todonext;
-    // Ugh... wait... this is... we need the indexes of the original ranges, the unchanged ranges changed?
-    //  Uh... and then we can infer the deletes (everything not unchanged), and inserts (everything changed, indexes from summing the sizes).
-    //  And... we could make a lookup for the deletes and inserts, keeping track of the aux positions, and then pulling
-    //  them out when iterating over the inserts, to create an auxOrder.
-    let finalRanges = sumList.getAllNodes();
-    let curIndex = 0;
-    for(let range of finalRanges) {
-        let size = range.sumIncluded.size;
-        if(range.value.state === "inserted") {
-            for(let i = 0; i < size; i++) {
-                delta.inserts.push(curIndex + i);
+        let delta: ArrayDelta = {
+            auxOrder: [],
+            inserts: [],
+            removes: [],
+        };
+
+        let finalRanges = sumList.getAllNodes();
+        let curIndex = 0;
+        for(let range of finalRanges) {
+            let size = range.sumIncluded.size;
+            if(range.value.state === "inserted") {
+                for(let i = 0; i < size; i++) {
+                    delta.inserts.push(curIndex + i);
+                }
+            }
+            curIndex += size;
+        }
+    
+        for(let deleteRange of deletions) {
+            let { originalIndex, size } = deleteRange;
+            for(let i = originalIndex; i < originalIndex + size; i++) {
+                delta.removes.push(i);
             }
         }
-        curIndex += size;
-    }
+    
+        sort(delta.removes, x => -x);
+        sort(delta.inserts, x => x);
 
-    for(let deleteRange of deletions) {
-        let { originalIndex, size } = deleteRange;
-        for(let i = originalIndex; i < originalIndex + size; i++) {
-            delta.removes.push(i);
+        return delta;
+    }
+}
+
+export class ArrayDeltaHolder<T = unknown> {
+    private originalOrder: T[];
+    private mutationList: MutationList;
+    public constructor(private underlyingArray: T[], initializeAllChanged = false) {
+        this.originalOrder = underlyingArray.slice();
+        if(initializeAllChanged) {
+            this.mutationList = new MutationList(0);
+            this.onArrayLengthChange(0, underlyingArray.length);
+        } else {
+            this.mutationList = new MutationList(this.originalOrder.length);
         }
     }
 
-    sort(delta.removes, x => -x);
-    sort(delta.inserts, x => x);    
-
-    if(g.TEST) {
-        sumList.validateAllNodes();
+    public onArrayLengthChange(index: number, count: number): void {
+        this.mutationList.addMutation(index, count);
+    }
+    public onArraySet(index: number): void {
+        this.mutationList.addMutation(index, -1);
+        this.mutationList.addMutation(index, +1);
     }
 
-    return delta;
+    public getDelta(): ArrayDelta {
+        let delta = this.mutationList.getDelta();
+        addDeltaMoves(delta, this.originalOrder, this.underlyingArray);
+        return delta;
+    }
+}
+
+/** Adds moves to a delta. */
+export function addDeltaMoves<T>(delta: ArrayDelta, prevOrder: T[], newOrder: T[]): void {
+    if(delta.auxOrder.length > 0) {
+        throw new Error(`Merged delta moves is not implemented yet, addDeltaMoves only works if there are no existing moves`);
+    }
+
+    // Value to indexes in delta.inserts
+    let newValueLookup: Map<T, number[]> = new Map();
+    for(let i = 0; i < delta.inserts.length; i++) {
+        let newIndex = delta.inserts[i];
+        // Ignore it, if it's already a move
+        if(newIndex < 0) {
+            throw new Error(`Pushing to aux stack with no auxOrder. Not invalid, but we don't support existing moves in addDeltaMoves yet`);
+        }
+        let value = newOrder[newIndex];
+        let deltaInserts = newValueLookup.get(value);
+        if(!deltaInserts) {
+            deltaInserts = [];
+            newValueLookup.set(value, deltaInserts);
+        }
+        deltaInserts.push(i);
+    }
+
+
+    let auxStackIndex = 0;
+    let auxOrderByInsertIndex: { auxStackIndex: number; insertIndex: number }[] = [];
+    for(let i = 0; i < delta.removes.length; i++) {
+        let removeIndex = delta.removes[i];
+        if(removeIndex < 0) {
+            throw new Error(`Pushing to aux stack with no auxOrder. Not invalid, but we don't support existing moves in addDeltaMoves yet`);
+        }
+        
+        let value = prevOrder[removeIndex];
+
+        let newIndexes = newValueLookup.get(value);
+        if(newIndexes) {
+            // Take from the end
+            let index = newIndexes.pop();
+            if(index !== undefined) {
+                let insertIndex = delta.inserts[index];
+                delta.inserts[index] = ~delta.inserts[index];
+                delta.removes[i] = ~delta.removes[i];
+                auxOrderByInsertIndex.push({ auxStackIndex, insertIndex });
+                auxStackIndex++;
+            }
+        }
+    }
+
+    sort(auxOrderByInsertIndex, x => x.insertIndex);
+    delta.auxOrder = auxOrderByInsertIndex.map(x => x.auxStackIndex);
+}
+
+//todonext;
+// Okay, make this a class, that takes mutations one at a time? And then can finalize the output at any time,
+//  BUT, also takes an arrNew and arrPrev when finalizating the output, which it uses to generate moves.
+//  We should probably write a test or two for moves as well...
+
+export function AATreeArrayGetChanges(arrayOriginalSize: number, mutations: ArrayMutation[]) {
+     // The value is the original index.
+     let arrayTree = new AATreeArray<number>();
+     for(let i = 0; i < arrayOriginalSize; i++) {
+         arrayTree.Insert(i, i);
+     }
+ 
+     for(let i = 0; i < mutations.length; i++) {
+         let mutation = mutations[i];
+         g.mutateIndex = i;
+         if(g.breakOnThisMutateIndex && g.mutateIndex === g.breakOnThisMutateIndex) {
+             debugger;
+         }
+         
+         if(mutation.sizeDelta === 0) continue;
+         if(mutation.sizeDelta < 0) {
+             for(let i = 0; i < -mutation.sizeDelta; i++) {
+                 arrayTree.Remove(mutation.index);
+             }
+         } else {
+             for(let i = 0; i < mutation.sizeDelta; i++) {
+                 let index = i + mutation.index;
+                 arrayTree.Insert(index, -1);
+             }
+         }
+     }
+ 
+     let removes: number[] = [];
+     let inserts: number[] = [];
+ 
+     let newLength = arrayTree.GetLength();
+     let nextPrevIndex = 0;
+     for(let i = 0; i < newLength; i++) {
+         let prevIndex = arrayTree.Get(i);
+         if(prevIndex === undefined) {
+             debugger;
+             arrayTree.Get(i);
+             throw new Error(`Internal error, invalid AATreeArray, at index ${i}, length ${newLength}`);
+         }
+ 
+         if(prevIndex === -1) {
+             inserts.push(i);
+         } else {
+             for(let prevIndexRemoved = nextPrevIndex; prevIndexRemoved < prevIndex; prevIndexRemoved++) {
+                 removes.push(prevIndexRemoved);
+             }
+             nextPrevIndex = prevIndex + 1;
+         }
+     }
+     for(let prevIndexRemoved = nextPrevIndex; prevIndexRemoved < arrayOriginalSize; prevIndexRemoved++) {
+         removes.push(prevIndexRemoved);
+     }
+ 
+     removes.reverse();
+ 
+     return {
+         removes,
+         inserts,
+         auxOrder: []
+     }; 
+}
+
+/** Mutations should include deletes, inserts AND sets (and of course, in order they were originally applied). */
+export function getChanges(arrayOriginalSize: number, mutations: ArrayMutation[], smallSplitFactor: boolean): ArrayDelta {
+    let mutationList = new MutationList(arrayOriginalSize);
+    for (let { index, sizeDelta } of mutations) {
+        mutationList.addMutation(index, sizeDelta);
+    }
+
+    return mutationList.getDelta();
 }

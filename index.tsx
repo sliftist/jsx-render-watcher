@@ -5,13 +5,13 @@ import * as ReactDOM from "react-dom";
 
 import { TestMain } from "./src/test";
 import { MountVanillaComponents } from "./src/mount2Vanilla";
-import { arrayDelta, KeyDeltaChanges, ArrayDeltaObj, ArrayDelta, DeltaContext, GetCurArrayDelta } from "./src/delta";
+import { arrayDelta, KeyDeltaChanges, ArrayDeltaObj, ArrayDelta, GetCurArrayDelta } from "./src/delta/deltaDefaults";
 import { keyBy, min, max } from "./src/lib/misc";
 import { g } from "pchannel";
 import { JSXNode } from "./src/mount2";
 import { eye0_pure } from "./src/eye";
-import { SkipList } from "./src/lib/SkipList";
 import { compareString } from "./src/lib/algorithms";
+import { DeltaContext } from "./src/delta/DeltaContext";
 
 export let page = (
     <html>
@@ -62,7 +62,6 @@ let libs = [
 
 
 
-import "./src/lib/SkipList";
 
 
 

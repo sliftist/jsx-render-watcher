@@ -1,4 +1,4 @@
-import { EyeMark, EyeType, EyePath } from "./eye";
+import { EyeLevelMark, EyeType } from "./eye";
 import { watchAccesses, getReads } from "./accessEvents";
 import { insertIntoListMapped, compareString, isEmpty, binarySearchMapped } from "./lib/algorithms";
 import { getParentHash, rootPath, pathFromArray, p2 } from "./lib/path";
@@ -6,6 +6,7 @@ import { g } from "./lib/misc";
 
 import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 import { getPathQuery } from "./debugUtils/searcher";
+import { derivedTotalReads } from "./derived";
 
 // NOTE: At the end of the day, this requires a code() callback, instead of "startWatch" and "endWatch" functions, simply
 //      for performance reasons. Keeping track of changes takes memory, and so we don't want to keep track of changes
@@ -14,8 +15,8 @@ import { getPathQuery } from "./debugUtils/searcher";
 
 
 export type AccessState = {
-    reads: Map<string, { path: EyeTypes.Path2 }>;
-    keyReads: Map<string, { path: EyeTypes.Path2 }>;
+    reads: Set<string>;
+    keyReads: Set<string>;
 };
 
 
@@ -27,10 +28,9 @@ export type AccessState = {
 
 type PathsWatched = {
     [pathHash: string]: {
-        path: EyeTypes.Path2;
         callbacks: {
             [eyeOutputPathHash: string]: {
-                callback: (path: EyeTypes.Path2) => void
+                callback: (pathHash: string) => void
             }
         };
     }
@@ -51,18 +51,8 @@ let keysEyePathsWatched: WatcherPaths = Object.create(null);
 
 
 
-exposeDebugLookup("eyePathsWatched", eyePathsWatched, x => eyePathsWatched = x, [
-    { query: getPathQuery([{ query: "" }]), type: "lookup" },
-    { query: getPathQuery([{ query: "" }, { query: "" }]), type: "lookup", foreignKey: { lookupName: "pathsWatched", useObjectKey: true } },
-]);
-exposeDebugLookup("pathsWatched", pathsWatched, x => pathsWatched = x, [
-    { query: getPathQuery([{ query: "" }]), hideColumn: true },
-    { query: getPathQuery([{ query: "" }, "path"]), formatValue: ((value: EyeTypes.Path2) => value.path) as any },
-    //{ query: rootPath },
-    //{ query: p2("path"), formatValue: ((value: EyeTypes.Path2) => value.path.join(".")) as any },
-    //{ query: p2("callbacks"), type: "lookup" },
-    //{ path: pathFromArray(["callbacks", PathWildCardKey]), formatValue: (value) => String(value).slice(0, 100) },
-]);
+exposeDebugLookup("eyePathsWatched", eyePathsWatched, x => eyePathsWatched = x);
+exposeDebugLookup("pathsWatched", pathsWatched, x => pathsWatched = x);
 
 function trigger(pathHash: string, pathsWatched: PathsWatched) {
     let callbacksObj = pathsWatched[pathHash];
@@ -70,23 +60,27 @@ function trigger(pathHash: string, pathsWatched: PathsWatched) {
 
     let { callbacks } = callbacksObj;
     for(let callback of Object.values(callbacks).map(x => x.callback)) {
-        callback(callbacksObj.path);
+        callback(pathHash);
     }
 }
 
 watchAccesses({
     write(path) {
         console.log("write", path);
-        trigger(path.pathHash, pathsWatched);
+        trigger(path, pathsWatched);
     },
-    writeKey(parentPath, childKey, change) {
-        console.log("change key", parentPath.pathHash, childKey, change);
-        trigger(parentPath.pathHash, keysPathsWatched);
+    writeKey(parentPath) {
+        console.log("change key in object", parentPath);
+        trigger(parentPath, keysPathsWatched);
     }
 });
 
 export function unwatchPaths(accessId: string) {
-    watchPaths({ keyReads: Object.create(null), reads: Object.create(null) }, () => {}, accessId);
+    let noWatches: AccessState = {
+        keyReads: new Set(),
+        reads: new Set(),
+    };
+    watchPaths(noWatches, () => {}, accessId);
 }
 
 /** Calls callback whenever any of the read paths OR their parents are changed.
@@ -94,7 +88,7 @@ export function unwatchPaths(accessId: string) {
 */
 export function watchPaths(
     pathsObj: AccessState,
-    callback: (path: EyeTypes.Path2) => void,
+    callback: (pathHash: string) => void,
     accessId: string,
 ): void {
     let pathHash = accessId;
@@ -112,6 +106,7 @@ export function watchPaths(
 
         // Add paths that are watched
         for(let [pathHash, path] of paths) {
+            derivedTotalReads.value++;
             pathsWatched[pathHash] = pathsWatched[pathHash] || { path, callbacks: Object.create(null) };
             pathsWatched[pathHash].callbacks[pathHash] = { callback };
             prevPaths[pathHash] = true;
@@ -119,6 +114,7 @@ export function watchPaths(
 
         // Remove paths that are no longer watched
         for(let pathHash of Object.keys(prevPaths)) {
+            derivedTotalReads.value++;
             if(paths.has(pathHash)) continue;
             if(!pathsWatched[pathHash]) continue;
             delete pathsWatched[pathHash].callbacks[pathHash];
@@ -136,8 +132,8 @@ keyReads: { [pathHash: string]: EyeTypes.Path2 };
 */
 
 export interface PathDelta {
-    added: Map<string, { path: EyeTypes.Path2 }>;
-    removed: Map<string, { path: EyeTypes.Path2 }>;
+    added: Set<string>;
+    removed: Set<string>;
 }
 
 export function watchPathsDelta(
@@ -145,10 +141,9 @@ export function watchPathsDelta(
         reads: PathDelta;
         keyReads: PathDelta;
     },
-    callback: (path: EyeTypes.Path2) => void,
+    callback: (pathHash: string) => void,
     accessId: string,
 ): void {
-    let pathHash = accessId;
 
     subscribe(pathsDelta.reads, pathsWatched, eyePathsWatched);
     subscribe(pathsDelta.keyReads, keysPathsWatched, keysEyePathsWatched);
@@ -158,21 +153,23 @@ export function watchPathsDelta(
         pathsWatched: PathsWatched,
         eyePathsWatched: WatcherPaths
     ) {
-        eyePathsWatched[pathHash] = eyePathsWatched[pathHash] || Object.create(null);
-        let prevPaths = eyePathsWatched[pathHash];
+        eyePathsWatched[accessId] = eyePathsWatched[accessId] || Object.create(null);
+        let prevPaths = eyePathsWatched[accessId];
 
         // Add paths that are watched
-        for(let [pathHash, path] of paths.added) {
-            pathsWatched[pathHash] = pathsWatched[pathHash] || { path, callbacks: Object.create(null) };
-            pathsWatched[pathHash].callbacks[pathHash] = { callback };
+        for(let pathHash of paths.added) {
+            derivedTotalReads.value++;
+            pathsWatched[pathHash] = pathsWatched[pathHash] || { callbacks: Object.create(null) };
+            pathsWatched[pathHash].callbacks[accessId] = { callback };
             prevPaths[pathHash] = true;
         }
 
         // Remove paths that are no longer watched
-        for(let [pathHash] of paths.removed) {
-            delete pathsWatched[pathHash].callbacks[pathHash];
+        for(let pathHash of paths.removed) {
+            derivedTotalReads.value++;
+            delete pathsWatched[pathHash].callbacks[accessId];
             if(isEmpty(pathsWatched[pathHash].callbacks)) {
-                delete pathsWatched[pathHash]
+                delete pathsWatched[pathHash];
             }
             delete prevPaths[pathHash];
         }

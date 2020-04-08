@@ -1,7 +1,7 @@
 import * as preact from "preact";
 
 import { g, UnionUndefined } from "../lib/misc";
-import { eye0_pure, EyeLevel, GetLastKeyCountBoundsSymbol, EyeRawValue, EyeType, eye, eye3_replace, eye2_tree } from "../eye";
+import { eye0_pure, EyeLevel, EyeRawValue, EyeType, eye, eye1_replace } from "../eye";
 import { derivedRaw, derived } from "../derived";
 import { exposedLookups, ExposedLookup, exposedLookupsDisplayInfo, DisplayInfo, reduceDisplayInfos } from "./exposeDebug";
 
@@ -13,6 +13,29 @@ import { PathQuery, QueryObject, getMatchQuery } from "./highlighter";
 //import { TablePath, queryResult, queries, getTablePathHash } from "./lookupIndexer";
 //import { getCellDisplayInfo, getColumnsFromDisplayInfos } from "./displayInfoIndexer";
 
+//todonext
+// And then for nested derived... maybe... we should globally hoist it. This does mean if you
+//  make a change to an array, and then run a map in the same function, you changes won't be reflected...
+//  but... even in a normal case the function will need to be rerun anyway... And delta Array.map
+//  won't allow implicitly closing on values anyway... I think? UGH, but... it would be nice if it could...
+//  - But... how can we allow closing upon variables?
+//todonext
+// UGH! Okay, how hard should it be to tell which variables are closed upon? I guess... all functions calls
+//  are closed upon, and that... unfortunate. But... we could probably parse to see if they are declared
+//  in the root derived state (and actually, that is fine, because then they are unique functions, so really...
+//  we just want to know all closed upon variables...).
+//  AND... if they call one of our functions... hmm... we could probably finagle them into calling
+//  a function of our choice with an argument of our choice. Which... let's us trick them into evaling
+//  a string, and accessing their scope.
+// Maybe... SpecialMapHoistScopes()(SpecialMap(array, function))
+//  Of course, function better be in the current scope, or else we can't even hoist the scope! Or... at least
+//  it better share the scope, it can be a class member function, that is fine... But if it is a function
+//  in another module, you're going to get into trouble. And then we can tell if the root function changes
+//  just be .toString(), which since we are checking the scope, is actually perfect.
+//  - OH! Well, of course, if you call some library function that uses global state, that won't work.
+//      - Although... we could wrap every closed upon variable, and then parse any functions before calling,
+//          checking their closed upon variables too... But no, let's not do that. Doing that could get REALLY
+//          hairy, really quickly...
 
 
 // User stories:
@@ -23,6 +46,11 @@ import { PathQuery, QueryObject, getMatchQuery } from "./highlighter";
 //      - See values derived is watching
 //      - See history of watches
 //      - See history of writes to watches
+//      - See a list of child map deriveds
+//todonext
+// Describe this more
+//          - These can be determined by deriveds looking for a parent derived context in their constructor,
+//              and then registering in that as being children
 //  - From data
 //      - Find a derived or list of deriveds from a nice name, or code location.
 //      - Drill into data value from the root, for... speculative data searching? Although... is this really useful?
@@ -30,6 +58,15 @@ import { PathQuery, QueryObject, getMatchQuery } from "./highlighter";
 //      - Find deriveds that use it
 //      - Find write history
 //      - Find code that writes to it
+//  - From source line
+//      - Values (eyes) written to, and read from
+//          - As in, across all active derived, or possibly the derived that exist at a specific time? Or region of time?
+//      - Derived that touch this line
+//      - The places in the UI that this impacts / that impact it?
+//  - A variable slice, which gives every code location that writes to an eye value,
+//      and then for all of those locations which are in a derived, take those derived, the values
+//      that they read from, and then all the code locations which write to those values, etc, etc,
+//      giving a slice (really a tree), of what impacts a value.
 
 //todonext;
 // Making it like a database was a mistake. We should just write every table from scratch, and if we want to do
@@ -74,7 +111,7 @@ class DebugArr extends preact.Component<{ arr: PropertyKey[] }, {}> {
                 {arr.map(x => <div className="Debug-pathValue">{String(x)}</div>)}
             </div>
         )
-    }, { niceName: "DebugArr.render", thisContextEyeLevel: EyeLevel.eye3_replace });
+    }, "DebugArr.render", undefined, EyeLevel.eye1_replace);
 }
 
 class DebugRow extends preact.Component<{
@@ -101,7 +138,7 @@ class DebugRow extends preact.Component<{
                 })}
             </tr>
         );
-    }, { niceName: "DebugRow.render", thisContextEyeLevel: EyeLevel.eye3_replace });
+    }, "DebugRow.render", undefined, EyeLevel.eye1_replace);
 }
 
 
@@ -134,7 +171,7 @@ class TableComponent extends preact.Component<{
                 </table>
             </div>
         );
-    }, { niceName: "TableComponent.render", thisContextEyeLevel: EyeLevel.eye3_replace });
+    }, "TableComponent.render", undefined, EyeLevel.eye1_replace);
 }
 
 export class DebugUtils extends preact.Component<{}, {}> {
@@ -206,6 +243,6 @@ export class DebugUtils extends preact.Component<{}, {}> {
                 })}
             </div>
         );
-    }, { niceName: "DebugUtils.render", thisContextEyeLevel: EyeLevel.eye3_replace });
+    }, "DebugUtils.render", undefined, EyeLevel.eye1_replace);
 }
 

@@ -46,8 +46,10 @@ module.exports = function (wallaby) {
         },
 
         workers: {
-            initial: 4,
-            regular: 2,
+            // Ugh... some of our tracking to verify our delta code isn't just accessing everything, uses global state.
+            //  So... we have to run our tests sequentially.
+            initial: 1,
+            regular: 1,
             restart: false
         },
 

@@ -18,7 +18,7 @@ import "./lib/listExtensions_g";
 import { keyBy, isShallowEqual } from "./lib/misc";
 import { LongestSequence } from "./lib/longestSequence";
 import { setAccessor } from "./lib/preact-dom";
-import { arrayDelta, ArrayDeltaObj } from "./delta";
+import { arrayDelta, ArrayDeltaObj } from "./delta/deltaDefaults";
 
 export const mountContextSymbol = Symbol("mountContextSymbol");
 export const mountTree = Symbol("mountTree");

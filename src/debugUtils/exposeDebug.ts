@@ -1,5 +1,5 @@
 import { g } from "../lib/misc";
-import { eye0_pure, EyePath } from "../eye";
+import { eye0_pure } from "../eye";
 
 export type ExposedLookup = { [key in PropertyKey]: object };
 let lookupsToExpose: {
