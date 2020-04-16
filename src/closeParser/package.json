@@ -1,0 +1,45 @@
+{
+	"name": "close-highlighter",
+	"displayName": "Close Highlighter",
+	"description": "Highlights all variables closed upon.",
+	"repository": "git@github.com:sliftist/jsx-render-watcher.git",
+	"main": "./dist/extension.js",
+	"files": [
+		"./dist/extension.js"
+    ],
+    "icon": "icon.png",
+	"version": "0.0.2",
+	"engines": {
+		"vscode": "^1.43.0"
+	},
+	"publisher": "sliftist",
+	"categories": [
+		"Linters"
+	],
+	"activationEvents": [
+		"*"
+	],
+	"contributes": {
+		"commands": []
+	},
+	"scripts": {
+		"vscode:prepublish": "yarn run compile",
+		"compile": "webpack",
+		"watch": "yarn run webpack --watch",
+		"pretest": "yarn run compile",
+        "package": "vsce package --out close-highlighter.vsix",
+		"install-local": "yarn run package && code --install-extension close-highlighter.vsix",
+		"noop": ""
+	},
+	"devDependencies": {
+		"@types/node": "^13.11.0",
+		"@types/vscode": "^1.43.0",
+		"@typescript-eslint/typescript-estree": "^2.27.0",
+		"typescript": "^3.8.3",
+		"webpack": "^4.42.1"
+	},
+	"peerDependencies": {
+		"ts-loader": "^6.2.2",
+		"webpack-cli": "^3.3.11"
+	}
+}
