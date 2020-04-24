@@ -342,9 +342,11 @@ export function parseClosed(
                 if(parent?.type === AST_NODE_TYPES.AssignmentExpression) {
                     isInAssigment++;
                 }
+                /*
                 if(parent?.type === AST_NODE_TYPES.VariableDeclarator && property === "init") {
                     isInAssigment++;
                 }
+                */
 
                 if(statement.type === AST_NODE_TYPES.ClassDeclaration) {
                     if(statement.id) {
@@ -417,20 +419,52 @@ export function parseClosed(
                 }
 
 
+                if(statement.type === AST_NODE_TYPES.Property && statement.key.type === AST_NODE_TYPES.Identifier && statement.key.name === "efficientStartMark") {
+                    //debugger;
+                }
+
                 if(statement.type === AST_NODE_TYPES.Property && isInAssigment === 0) {
                     if(inInvertedObjects > 0) {
-                        if(statement.value.type === AST_NODE_TYPES.Identifier) {
-                            declareIdentifier(statement.value, "function");
-                            if(statement.key.type === AST_NODE_TYPES.Identifier) {
-                                // It's... an access, but from the object on the other side, uh...
-                                //	{ x: y } = obj, is the same as y = obj.x,
-                                //	and so we shouldn't register an access for x, as it is really an access under an object.
-                                usedRanges.add(getHideHash(statement.key));
+                        if(statement.key.type === AST_NODE_TYPES.Identifier) {
+                            if(
+                                statement.value.type === AST_NODE_TYPES.Identifier
+                                && statement.key.loc.start.line === statement.value.loc.start.line
+                                && statement.key.loc.start.column === statement.value.loc.start.column
+                            ) {
+                                declareIdentifier(statement.value, "function");
+                            } else {
+                                declareIdentifier(statement.value, "function");
+                                
+                                if(statement.value.type === AST_NODE_TYPES.Identifier) {
+                                    usedRanges.add(getHideHash(statement.key));
+                                }
                             }
+                            // It's... an access, but from the object on the other side, uh...
+                            //	{ x: y } = obj, is the same as y = obj.x,
+                            //	and so we shouldn't register an access for x, as it is really an access under an object.
+                            usedRanges.add(getHideHash(statement.key));
                         }
                     } else {
+                        if(
+                            statement.key.type === AST_NODE_TYPES.Identifier
+                            && statement.value.type === AST_NODE_TYPES.Identifier
+                            && statement.key.loc.start.line === statement.value.loc.start.line
+                            && statement.key.loc.start.column === statement.value.loc.start.column
+                        ) {
+                            accessIdentifier(statement.key);
+                        }
                         if(statement.key.type === AST_NODE_TYPES.Identifier) {
                             usedRanges.add(getHideHash(statement.key));
+                        }
+                    }
+                }
+
+                if(statement.type === AST_NODE_TYPES.ArrayPattern) {
+                    if(inInvertedObjects > 0) {
+                        for(let elem of statement.elements) {
+                            if(elem && elem.type === AST_NODE_TYPES.Identifier) {
+                                declareIdentifier(elem, "function");
+                            }
                         }
                     }
                 }
@@ -517,9 +551,11 @@ export function parseClosed(
                 if(parent?.type === AST_NODE_TYPES.AssignmentExpression) {
                     isInAssigment--;
                 }
+                /*
                 if(parent?.type === AST_NODE_TYPES.VariableDeclarator && property === "init") {
                     isInAssigment--;
                 }
+                */
 
                 functionScope.onNodeExit(statement);
                 braceScope.onNodeExit(statement);

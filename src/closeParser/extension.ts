@@ -248,7 +248,6 @@ function activateBase(context: vscode.ExtensionContext, timeCode: (code: () => v
 			curFncScope: ScopeObj,
 			declObj: DeclObj|undefined,
 		): void {
-	
 			let range = new vscode.Range(doc.positionAt(varPos), doc.positionAt(varPos + varName.length));
 	
 			if(!declScope) {					
@@ -336,6 +335,8 @@ function activateBase(context: vscode.ExtensionContext, timeCode: (code: () => v
 			}
 
 			for(let [obj, closedColorings] of declarations) {
+				// Anything before the start of the document is an implicit declaration (this, arguments, etc)
+				if(obj.varPos < 0) continue;
 				
 				let countUsed = obj.uses.size;
 	
@@ -356,7 +357,11 @@ function activateBase(context: vscode.ExtensionContext, timeCode: (code: () => v
 			}
 
 		} catch(e) {
-			vscode.window.showInformationMessage(`Parse error ${e.stack}!`);
+			if(e.stack) {
+				vscode.window.showInformationMessage(`Parse error ${e.stack}!`);
+			} else {
+				vscode.window.showInformationMessage(`Parse error (${e.lineNumber}:${e.column}) ${e.message}`);
+			}
 		}
 
 		time = Date.now() - time;
