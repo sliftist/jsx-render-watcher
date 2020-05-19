@@ -137,6 +137,7 @@ export function parseClosed(
                     name = fixObj.idName;
                     varPos = fixObj.pos;
                 } else {
+                    debugger;
                     throw new Error(`Either identifier must be of type Identifier, or nameOverride must be passed.`);
                 }
             }
@@ -294,6 +295,10 @@ export function parseClosed(
         if(usedRanges.has(getHideHash(identifier))) return;
         usedRanges.add(getHideHash(identifier));
 
+        if(identifier.name === "breakhere") {
+            debugger;
+        }
+
         if(phase === "populate") {
 
         } else {
@@ -317,13 +322,14 @@ export function parseClosed(
 
 
     
-    let inInvertedObjects = 0;
+    let isInDeclaration = 0;
     let isInAssigment = 0;
+    let curDeclarationType: "function"|"brace" = "function";
 
     runTraverse();
     usedRanges = new Set();
     phase = "use";
-    inInvertedObjects = 0;
+    isInDeclaration = 0;
     isInAssigment = 0;
     runTraverse();
 
@@ -337,24 +343,60 @@ export function parseClosed(
         new EnterExitTraverser({
             enter(statement, parent, property) {
                 if(property === "id" || property === "params") {
-                    inInvertedObjects++;
+                    isInDeclaration++;
+                    if(isInDeclaration > 1) {
+                        debugger;
+                    }
                 }
                 if(parent?.type === AST_NODE_TYPES.AssignmentExpression) {
                     isInAssigment++;
                 }
-                /*
-                if(parent?.type === AST_NODE_TYPES.VariableDeclarator && property === "init") {
-                    isInAssigment++;
+                
+                if(statement.type === AST_NODE_TYPES.VariableDeclarator) {
+                    let identifierType = (
+                        parent?.type === AST_NODE_TYPES.VariableDeclaration
+                        && parent.kind === "var"
+                        ? "function" as "function"
+                        : "brace" as "brace"
+                    );
+                    if(isInDeclaration === 1) {
+                        curDeclarationType = identifierType;
+                    }
+                    if(parent?.type === AST_NODE_TYPES.VariableDeclaration
+                        && parent.declare
+                    ) {
+                        // Ignore type declarations
+                        return false;
+                    }
+                    if(statement.id.type === AST_NODE_TYPES.Identifier) {
+                        declareIdentifier(statement.id, identifierType);
+                    }
+                    if(statement.id.type === AST_NODE_TYPES.ArrayPattern) {
+                        for(let elem of statement.id.elements) {
+                            if(elem?.type === AST_NODE_TYPES.Identifier) {
+                                declareIdentifier(elem, identifierType);
+                            }
+                        }
+                    }
                 }
-                */
+
+                if(statement.type === AST_NODE_TYPES.ExportSpecifier) {
+                    // If we export a name different than the exported variable, ignore that identifer,
+                    //  it isn't an access, and doesn't really exist in any scope.
+                    if(statement.local.name !== statement.exported.name) {
+                        usedRanges.add(getHideHash(statement.exported));
+                    }
+                }
 
                 if(statement.type === AST_NODE_TYPES.ClassDeclaration) {
                     if(statement.id) {
                         declareIdentifier(statement.id, "function");
                     }
-                    setScope(statement, "function");
 
-                    // Class declarations have a this context
+                    // Interestingly enough, this is scoped to the class. This means even in static constructors,
+                    //  the this from any parent context is eclipsed. Of course... accessing this in static constructors
+                    //  will give a typescript error (but not a javascript error), BUT, even with this error, the parent
+                    //  this will still be eclipsed. Very interesting.
                     declareIdentifier(statement, "function", "this");
                 }
 
@@ -414,28 +456,28 @@ export function parseClosed(
                             if(param.left.type === AST_NODE_TYPES.Identifier) {
                                 declareIdentifier(param.left, "function");
                             }
+                        } else if(param.type === AST_NODE_TYPES.RestElement) {
+                            if(param.argument.type === AST_NODE_TYPES.Identifier) {
+                                declareIdentifier(param.argument, "function");
+                            }
                         }
                     }
                 }
 
 
-                if(statement.type === AST_NODE_TYPES.Property && statement.key.type === AST_NODE_TYPES.Identifier && statement.key.name === "efficientStartMark") {
-                    //debugger;
-                }
-
-                if(statement.type === AST_NODE_TYPES.Property && isInAssigment === 0) {
-                    if(inInvertedObjects > 0) {
+                if(statement.type === AST_NODE_TYPES.Property) {/// && isInAssigment === 0) {
+                    if(isInDeclaration > 0) {
                         if(statement.key.type === AST_NODE_TYPES.Identifier) {
                             if(
                                 statement.value.type === AST_NODE_TYPES.Identifier
                                 && statement.key.loc.start.line === statement.value.loc.start.line
                                 && statement.key.loc.start.column === statement.value.loc.start.column
                             ) {
-                                declareIdentifier(statement.value, "function");
+                                declareIdentifier(statement.value, curDeclarationType);
                             } else {
-                                declareIdentifier(statement.value, "function");
                                 
                                 if(statement.value.type === AST_NODE_TYPES.Identifier) {
+                                    declareIdentifier(statement.value, curDeclarationType);
                                     usedRanges.add(getHideHash(statement.key));
                                 }
                             }
@@ -459,8 +501,16 @@ export function parseClosed(
                     }
                 }
 
+                if(isInDeclaration > 0) {
+                    if(statement.type === AST_NODE_TYPES.RestElement) {
+                        if(statement.argument.type === AST_NODE_TYPES.Identifier) {
+                            declareIdentifier(statement.argument, curDeclarationType);
+                        }
+                    }
+                }
+
                 if(statement.type === AST_NODE_TYPES.ArrayPattern) {
-                    if(inInvertedObjects > 0) {
+                    if(isInDeclaration > 0) {
                         for(let elem of statement.elements) {
                             if(elem && elem.type === AST_NODE_TYPES.Identifier) {
                                 declareIdentifier(elem, "function");
@@ -472,31 +522,6 @@ export function parseClosed(
                 if(statement.type === AST_NODE_TYPES.ClassProperty) {
                     if(statement.key.type === AST_NODE_TYPES.Identifier) {
                         usedRanges.add(getHideHash(statement.key));
-                    }
-                }
-
-                if(statement.type === AST_NODE_TYPES.VariableDeclarator) {
-                    let identifierType = (
-                        parent?.type === AST_NODE_TYPES.VariableDeclaration
-                        && parent.kind === "var"
-                        ? "function" as "function"
-                        : "brace" as "brace"
-                    );
-                    if(parent?.type === AST_NODE_TYPES.VariableDeclaration
-                        && parent.declare
-                    ) {
-                        // Ignore type declarations
-                        return false;
-                    }
-                    if(statement.id.type === AST_NODE_TYPES.Identifier) {
-                        declareIdentifier(statement.id, identifierType);
-                    }
-                    if(statement.id.type === AST_NODE_TYPES.ArrayPattern) {
-                        for(let elem of statement.id.elements) {
-                            if(elem?.type === AST_NODE_TYPES.Identifier) {
-                                declareIdentifier(elem, identifierType);
-                            }
-                        }
                     }
                 }
 
@@ -520,6 +545,18 @@ export function parseClosed(
                     return false;
                 }
 
+                /*
+                let isObjectDestructure = false;
+                if(
+                    statement.type === AST_NODE_TYPES.Identifier
+                    && property === "key"
+                    parent
+                    && "value" in parent && parent.value && typeof parent.value === "object"
+                    && "type" in parent.value && parent.value.type === AST_NODE_TYPES.Identifier
+                    && parent.value.name) {
+                }
+                //!parent || !("value" in parent) || !parent.value || parent.value.type !== AST_NODE_TYPES.Ide
+                */
 
                 if(
                     statement.type === AST_NODE_TYPES.Identifier
@@ -546,7 +583,7 @@ export function parseClosed(
             },
             exit(statement, parent, property) {
                 if(property === "id" || property === "params") {
-                    inInvertedObjects--;
+                    isInDeclaration--;
                 }
                 if(parent?.type === AST_NODE_TYPES.AssignmentExpression) {
                     isInAssigment--;
