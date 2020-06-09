@@ -321,7 +321,6 @@ export function parseClosed(
     }
 
 
-    
     let isInDeclaration = 0;
     let isInAssigment = 0;
     let curDeclarationType: "function"|"brace" = "function";
@@ -378,6 +377,12 @@ export function parseClosed(
                             }
                         }
                     }
+                }
+
+                if(statement.type === AST_NODE_TYPES.TSEnumDeclaration) {
+                    // Enums appear to be at the brace level. At the global level they are
+                    //  defined with var... but inside nested braces they use let, so... brace looks like the intention.
+                    declareIdentifier(statement.id, "brace");
                 }
 
                 if(statement.type === AST_NODE_TYPES.ExportSpecifier) {
