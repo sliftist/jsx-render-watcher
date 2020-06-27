@@ -6,7 +6,7 @@ import { g } from "./lib/misc";
 
 import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 import { getPathQuery } from "./debugUtils/searcher";
-import { derivedTotalReads } from "./derived";
+import { derivedTotalReads } from "./derivedStats";
 
 // NOTE: At the end of the day, this requires a code() callback, instead of "startWatch" and "endWatch" functions, simply
 //      for performance reasons. Keeping track of changes takes memory, and so we don't want to keep track of changes
@@ -66,11 +66,11 @@ function trigger(pathHash: string, pathsWatched: PathsWatched) {
 
 watchAccesses({
     write(path) {
-        console.log("write", path);
+        //console.log("write", path);
         trigger(path, pathsWatched);
     },
     writeKey(parentPath) {
-        console.log("change key in object", parentPath);
+        //console.log("change key in object", parentPath);
         trigger(parentPath, keysPathsWatched);
     }
 });

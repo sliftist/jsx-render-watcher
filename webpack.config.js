@@ -8,6 +8,7 @@ function getConfig(env, argv) {
         entry: {
             index: "./index.tsx",
             debugUtils: "./src/debugUtils/debugUtils.tsx",
+            test: "./src/test.tsx",
         },
         output: {
             path: path.resolve(__dirname, "dist"),
@@ -44,27 +45,6 @@ function getConfig(env, argv) {
             //new (require('webpack-bundle-analyzer').BundleAnalyzerPlugin)()
         ]
     };
-
-    trySetKeys(`/etc/letsencrypt/live/quentinbrooks.com/privkey.pem`, `/etc/letsencrypt/live/quentinbrooks.com/fullchain.pem`);
-    //trySetKeys(`../../disks/quentinbrooks.com/privkey.pem`, `../../disks/quentinbrooks.com/fullchain.pem`);
-    //trySetKeys(`../../../disks/quentinbrooks.com/privkey.pem`, `../../../disks/quentinbrooks.com/fullchain.pem`);
-
-    function trySetKeys(keyPath, certPath) {
-        config.devServer = config.devServer || {};
-        if(require("os").type() === "Linux") {
-            config.devServer.public = "quentinbrooks.com";
-        } else {
-            config.devServer.public = "localhost";
-        }
-        if(fs.existsSync(keyPath)) {
-            config.devServer.port = 443;
-            config.devServer.host = "0.0.0.0";
-            config.devServer.https = {};
-            config.devServer.https.key = keyPath;
-            config.devServer.https.cert = certPath;
-        }
-    }
-
     return config;
 }
 

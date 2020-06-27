@@ -1,4 +1,5 @@
 import { UnionUndefined } from "./lib/misc";
+import { derivedTotalReads } from "./derivedStats";
 
 type WatchWriteCallbacks = {
     write: (hash: string) => void;
@@ -83,8 +84,9 @@ export function getReads<T>(
 }
 
 export function registerReadAccess(hash: string) {
-    console.log(`Read`, hash);
+    //console.log(`Read`, hash);
     for(let callbacksList of readCallbacks) {
+        derivedTotalReads.value++;
         let callbacks = callbacksList[callbacksList.length - 1];
         callbacks.read(hash);
     }
@@ -95,8 +97,9 @@ export function registerReadAccess(hash: string) {
  *      at obj.x (they should be different hashes).
  */
 export function registerKeysReadAccess(parentHash: string) {
-    console.log(`Read keys`, parentHash);
+    //console.log(`Read keys`, parentHash);
     for(let callbacksList of readCallbacks) {
+        derivedTotalReads.value++;
         let callbacks = callbacksList[callbacksList.length - 1];
         callbacks.readKeys(parentHash);
     }
@@ -106,10 +109,12 @@ export function registerDeltaReadAccess(delta: ReadDelta) {
     for(let callbacksList of readCallbacks) {
         let callbacks = callbacksList[callbacksList.length - 1];
         if(callbacks.readDelta) {
-            console.log(`Read delta keys`, delta.fullReads);
+            derivedTotalReads.value++;
+            //console.log(`Read delta keys`, delta.fullReads);
             callbacks.readDelta(delta);
         } else {
             for(let key of delta.fullReads) {
+                derivedTotalReads.value++;
                 registerReadAccess(key);
             }
         }

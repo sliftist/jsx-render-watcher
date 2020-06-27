@@ -58,12 +58,11 @@ export class AATree<T, Reduced> {
     }
 
     public GetLeftSum(node: AATreeNode<T, Reduced>): Reduced|undefined {
-        let curSum: Reduced|undefined = node.left?.reduced;
-
+        let curSum: Reduced|undefined = node.left?.reducedRecursive;
         while(true) {
             let parent = node.parent;
             if(!parent) break;
-            // If we are before our parent, then we should include our parent, and their left child
+            // If we are after our parent, then we should include our parent, and their left child
             if(parent.right === node) {
                 curSum = this.reduceHelper(curSum, parent.left?.reducedRecursive);
                 curSum = this.reduceHelper(curSum, parent.reduced);

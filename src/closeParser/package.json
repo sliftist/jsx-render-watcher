@@ -27,7 +27,7 @@
 		"compile": "webpack",
 		"watch": "yarn run webpack --watch",
 		"pretest": "yarn run compile",
-        "package": "vsce package --out close-highlighter.vsix",
+		"package": "vsce package --out close-highlighter.vsix",
 		"install-local": "yarn run package && code --install-extension close-highlighter.vsix",
 		"noop": ""
 	},

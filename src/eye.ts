@@ -68,7 +68,7 @@ export function eye1_replace<T extends object>(initialState: T, niceName?: strin
 }
 
 
-function isEye(obj: unknown): false|true|"replace" {
+export function isEye(obj: unknown): false|true|"replace" {
     if(!canHaveChildren(obj)) return false;
     let value = (obj as any)[EyeLevelMark];
     if(value === EyeLevel.eye0_pure) return true;
@@ -779,7 +779,7 @@ function eyeInternalBase<T extends object>(
                 }
 
                 if(typeof propBadType === "symbol") {
-                    console.log(`Read symbol ${String(propBadType)}`);
+                    // console.log(`Read symbol ${String(propBadType)}`);
                 }
 
                 let rawValue = Reflect.get(obj, propBadType, receiver);

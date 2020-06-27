@@ -11,7 +11,6 @@ import { EnterExitTraverser } from "./enterExitTraverser";
 
 const decType = vscode.window.createTextEditorDecorationType;
 
-
 const variableDeclaration = decType({});
 const variableDeclarationUnused = decType({ backgroundColor: `hsla(320, 75, 40, 0)` });
 const variableDeclarationHasCloses = decType({
@@ -140,6 +139,9 @@ const fullDecorationsList = [
 // your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
 	let status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+
+	debugger;
+	
 
 	let recentRunLength = 10 * 1000;
 	let recentRuns: { start: number; end: number }[] = [];

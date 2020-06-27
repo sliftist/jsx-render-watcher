@@ -1,5 +1,5 @@
 import { watchAccesses, getReads, ReadDelta, registerDeltaReadAccess, registerKeysReadAccess } from "./accessEvents";
-import { eye, EyeType, eye0_pure, EyeLevel, EyeId } from "./eye";
+import { eye, EyeType, eye0_pure, EyeLevel, EyeId, isEye } from "./eye";
 import { watchPaths, AccessState, unwatchPaths, watchPathsDelta, PathDelta } from "./getAccesses";
 import { canHaveChildren, insertIntoListMapped } from "./lib/algorithms";
 import { getRootKey, pathFromArray } from "./lib/path";
@@ -7,12 +7,15 @@ import { exposeDebugLookup } from "./debugUtils/exposeDebug";
 import { getPathQuery } from "./debugUtils/searcher";
 import { createNewIdentifier } from "./identifer";
 import { DeltaContext, DeltaState, DeltaStateId } from "./delta/DeltaContext";
-import { UnionUndefined } from "./lib/misc";
+import { UnionUndefined as thisIsAVariableDeclaration } from "./lib/misc";
+import { derivedTotalReads } from "./derivedStats";
 
 export const BoxedValueSymbol = Symbol("BoxedValueSymbol");
 export const DisposeSymbol = Symbol("DisposeSymbol");
 
+
 const DerivedIdSymbol = Symbol("DerivedIdSymbol");
+
 
 type ObserverThisContext = {
     forceUpdate: () => void;
@@ -21,11 +24,13 @@ type ObserverThisContext = {
     updateOrder?: string;
 };
 
-let onDerivedsSettledObj: {resolve(): void; reject(err: unknown): void; promise: Promise<void>}|undefined = undefined;
+let onDerivedsSettledObj: {
+    resolve(): void; reject(err: unknown): void; promise: Promise<void>
+}|undefined = undefined;
 
 // TODO: This should probably handle callback deduping itself, so we don't queue a callback twice...
 let scheduledCallbacks: {callback: () => void; order: string|undefined}[] | undefined = undefined;
-function scheduleCallback(callback: () => void, order: string|undefined) {
+function scheduleCallback(this: any, callback: () => void, order: string|undefined = undefined) {
     if(!scheduledCallbacks) {
         scheduledCallbacks = [];
         let callbacks = scheduledCallbacks;
@@ -114,7 +119,7 @@ export function derived<T extends unknown>(
      */
     attachToParent: boolean|"weak" = false,
     disposeCallback?: () => void
-): T & { [DisposeSymbol](): void } {
+) {
     // We notify our parents of important updates, because we return the result as an eye. If the parent doesn't
     //  utilize the output eye (or parts of it), then it doesn't need to know when we change, which is fine.
 
@@ -130,7 +135,8 @@ export function derived<T extends unknown>(
     }
     */
 
-    let outputEye = eye0_pure({} as { [key in PropertyKey]: unknown }, niceName);
+    let outputRaw: T|undefined = undefined;
+    let outputEye = eye0_pure(Object.create(null) as { [key in PropertyKey]: unknown }, niceName);
     let id = outputEye[EyeId];
 
     let run!: ReturnType<typeof derivedRaw>; 
@@ -142,16 +148,21 @@ export function derived<T extends unknown>(
         forceUpdate() {
             let output = run.call(context);
             function setRecursive(target: any, source: any) {
-                for(let key in target) {
-                    let sourceValue = canHaveChildren(source) ? source[key] : undefined;
+                for(let key in source) {
+                    let sourceValue = source[key];
                     if(typeof source === "function") {
                         // TODO: I guess we could do this, by copying the function, and something... it will be a headache to implement though...
                         throw new Error(`Returning functions in watchers with outputEyeContext set isn't supported yet`);
                     }
                     if(canHaveChildren(sourceValue)) {
-                        // TODO: Don't Object.create, instead cache the old raw object, and diff them.
-                        target[key] = Object.create(null);
-                        setRecursive(target[key], sourceValue);
+                        if(isEye(sourceValue)) {
+                            // Don't unwrap eyes, they are likely cached elsewhere anywhere, so unwrapping them will be inefficient.
+                            target[key] = sourceValue;
+                        } else {
+                            // TODO: Don't Object.create, instead cache the old raw object, and diff them.
+                            target[key] = Object.create(null);
+                            setRecursive(target[key], sourceValue);
+                        }
                     } else {
                         target[key] = sourceValue;
                     }
@@ -180,9 +191,6 @@ export function derived<T extends unknown>(
 
     return result;
 }
-
-/** A rough indicator of the work done by reads. */
-export let derivedTotalReads = { value: 0 };
 
 /*
 export let derivedTriggerDiag: {
@@ -225,7 +233,7 @@ function createDerivedStackId(): DeltaStateId<DerivedFnc> {
  *      derived function (otherwise it would be disposed if it wasn't accessed).
  *      - To be used when you don't want to run the derived, but want to keep it alive.
  */
-export function keepDerivedAlive(derived: DerivedFnc): void {
+export function keepDerivedAlive(derived: { [DerivedIdSymbol]: string }): void {
     let parent = getParentDerived();
     // Don't warn or throw if it is a root derived, in that case it isn't that the user didn't strongly attach it, it is that
     //  a derived that supported memory management inside of deriveds is being used statically, which is fine, and expected,
@@ -243,7 +251,7 @@ export function keepDerivedAlive(derived: DerivedFnc): void {
     parent.strongAttachedChildrenCurrentlyAccessed.add(derived[DerivedIdSymbol]);
 }
 
-interface DerivedFnc<T extends unknown = unknown, This extends ObserverThisContext = ObserverThisContext> {
+export interface DerivedFnc<T extends unknown = unknown, This extends ObserverThisContext = ObserverThisContext> {
     (this: This): T;
     [DisposeSymbol]: () => void;
 
@@ -397,9 +405,9 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
             pendingChange = true;
             let name = (this as any).name || this.constructor.name;
 
-            console.info(`Schedule triggering of derived ${name}`);
+            //console.info(`Schedule triggering of derived ${name}`);
             scheduleCallback(() => {
-                console.info(`Inside triggering of derived ${name}`);
+                //console.info(`Inside triggering of derived ${name}`);
                 pendingChange = false;
                 this.forceUpdate();
             }, result.depth.toFixed(10));

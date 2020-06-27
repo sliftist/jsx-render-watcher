@@ -1,9 +1,13 @@
 import { eye0_pure, EyeType, eye, eye1_replace } from "./eye";
-import { derived, derivedTotalReads, derivedRaw, DisposeSymbol, globalAliveDerivedCount, onDerivedsSettled } from "./derived";
+import { derived, derivedRaw, DisposeSymbol, globalAliveDerivedCount, onDerivedsSettled } from "./derived";
+import { derivedTotalReads } from "./derivedStats";
 import { GetCurLookupDelta, GetCurArrayDelta, ArrayDelta } from "./delta/deltaDefaults";
 import { ThrowIfNotImplementsData } from "pchannel";
 import { getObjIdentifier } from "./identifer";
 import { deltaArrayMap } from "./delta/deltaMap";
+
+import { parse } from '@typescript-eslint/typescript-estree';
+import { parseClosed } from "./closeParser/parseClosed";
 
 
 //todonext
@@ -48,7 +52,7 @@ describe("derived delta", () => {
 
         ThrowIfNotImplementsData(lastSum, 3);
         baseReads = derivedTotalReads.value - baseReads;
-        console.log(lastSumLoopCount, baseReads);
+        //console.log(lastSumLoopCount, baseReads);
 
 
         let readsForChanges = derivedTotalReads.value;
@@ -81,7 +85,7 @@ describe("derived delta", () => {
         // There have to be some read changes! Of there are none, then we must not be tracking changes properly!
         ThrowIfNotImplementsData(readsForChanges > 0, true);
 
-        console.log(readsForChanges, baseReads);
+        //console.log(readsForChanges, baseReads);
 
         // We should have far fewer reads when just makes a few changes to the lookup than when we
         //  had to create the entire lookup.
@@ -115,8 +119,8 @@ describe("derived delta", () => {
         });
 
         ThrowIfNotImplementsData(lastSum, 4950);
-        console.log(lastSum);
-        console.log(derivedTotalReads.value);
+        //console.log(lastSum);
+        //console.log(derivedTotalReads.value);
 
         baseReads = derivedTotalReads.value - baseReads;
 
@@ -137,7 +141,7 @@ describe("derived delta", () => {
         readsForChanges = derivedTotalReads.value - readsForChanges;
 
 
-        console.log(readsForChanges, baseReads);
+        //console.log(readsForChanges, baseReads);
         // Making a few changes should be require A LOT fewer reads than 
         ThrowIfNotImplementsData(readsForChanges < baseReads / 10, true);
 
@@ -186,8 +190,8 @@ describe("derived delta", () => {
         });
 
         ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
-        console.log(lastSum);
-        console.log(derivedTotalReads.value);
+        //console.log(lastSum);
+        //console.log(derivedTotalReads.value);
 
         baseReads = derivedTotalReads.value - baseReads;
 
@@ -214,13 +218,14 @@ describe("derived delta", () => {
         readsForChanges = derivedTotalReads.value - readsForChanges;
 
 
+        //console.log(readsForChanges, baseReads);
         // Making a few changes should be require A LOT fewer reads than 
         ThrowIfNotImplementsData(readsForChanges < baseReads / 10, true);
 
         // We should have few loops, and not loop over everything.
         ThrowIfNotImplementsData(loops < 10, true);
 
-        console.log({ loops, readsForChanges, baseReads });
+        //console.log({ loops, readsForChanges, baseReads });
 
 
         rootDerived[DisposeSymbol]();
@@ -250,15 +255,14 @@ describe("derived delta", () => {
 
 
         {
-            debugger;
             let readsForChange = derivedTotalReads.value;
             values.splice(~~(values.length / 2), 1);
             changeValue.value++;
             await onDerivedsSettled();
-            debugger;
+
             readsForChange = derivedTotalReads.value - readsForChange;
             
-            console.log(readsForChange, baseReads);
+            //console.log(readsForChange, baseReads);
 
             // If too many reads occur, it means the delta isn't being reused, and a new one is created per run.
             ThrowIfNotImplementsData(readsForChange < baseReads / 10, true);
@@ -278,9 +282,101 @@ describe("derived delta", () => {
             
             readForChangeWeArentWatching = derivedTotalReads.value - readForChangeWeArentWatching;
 
-            console.log(readForChangeWeArentWatching);
+            //console.log(readForChangeWeArentWatching);
             ThrowIfNotImplementsData(readForChangeWeArentWatching, 0);
         }
+    });
+
+
+    it("deltaMap either handles closures or throws", async () => {
+        let values = eye0_pure(Array(100).fill(0).map((x, i) => i));
+
+        let factor = eye({ value: 1 });
+
+        let baseReads = derivedTotalReads.value;
+        let output;
+        try {
+            output = derived(() => {
+                let f = factor.value;
+                function fnc(i: number) {
+                    return i * f;
+                }
+
+                let outputMap = deltaArrayMap(values, fnc);
+                return { value: outputMap };
+            });
+        } catch(e) {
+            //console.log(e.message);
+            // Fine, if it throws, it means it detected the closed variable, and gave an error specifying it cannot handle
+            //  closed variables
+            return;
+        }
+
+        baseReads = derivedTotalReads.value - baseReads;
+
+
+        let changeReads = derivedTotalReads.value;
+
+        // If it doesn't throw, it means the surrounding closure rewrote the delta call to pass f as a variable, or at least
+        //  make deltaArrayMap use eval to access the parent scope. I might never do either, but if it doesn't throw, and evaluates
+        //  the output correctly... that's fine.
+
+        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), 4950);
+
+        factor.value = 10;
+        await onDerivedsSettled();
+
+        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), 49500);
+
+
+        changeReads = derivedTotalReads.value - changeReads;
+
+        // deltaArrayMap must really only apply the delta, and not just run over all values every time
+        ThrowIfNotImplementsData(changeReads < baseReads / 10, true);
+    });
+
+
+    it("deltaMap supports explicit variable passing", async () => {
+        const count = 1000;
+        let values = eye0_pure(Array(count).fill(0).map((x, i) => i));
+
+        
+        let factor = eye({ value: 1 });
+        let factorRaw = 1;
+
+        let baseReads = derivedTotalReads.value;
+
+        let output = derived(() => {
+            let f = factor.value;
+            let outputMap = deltaArrayMap(values, function(this, i) {
+                //console.log(i + "_" + this.f);
+                return i * this.f;
+            }, { f });
+            return { value: outputMap };
+        });
+
+        baseReads = derivedTotalReads.value - baseReads;
+
+
+        let changeReads = derivedTotalReads.value;
+
+        // If it doesn't throw, it means the surrounding closure rewrote the delta call to pass f as a variable, or at least
+        //  make deltaArrayMap use eval to access the parent scope. I might never do either, but if it doesn't throw, and evaluates
+        //  the output correctly... that's fine.
+
+        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), Array(count).fill(0).map((x, i) => i).reduce((a, b) => a + b, 0));
+
+        changeReads = derivedTotalReads.value - changeReads;
+        
+        // deltaArrayMap must really only apply the delta, and not just run over all values every time
+        ThrowIfNotImplementsData(changeReads < baseReads / 10, true);
+
+        
+        factorRaw = 10;
+        factor.value = 10;
+        await onDerivedsSettled();
+
+        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), Array(count).fill(0).map((x, i) => i * 10).reduce((a, b) => a + b, 0));
     });
 
     // TODO: After we support the above regular map case, support the case of a mapped inside of a derived, which
@@ -301,4 +397,27 @@ describe("derived delta", () => {
     //  - Then add a helper function to trick the user into calling eval, so we can check their scope to see if the closed
     //      upon variables have changed... allowing us to re-evaluate the function appropriately, accessing the new
     //      closed upon variables, making variable closures not a major problem.
+
+    // TODO: Ah, but... if one of our parent scopes uses a derived, AND, that derived doesn't use any values from it's parent scope
+    //  (recursively, meaning we only use values from that derived's scope), then we could actually have the parent derived rewrite it's
+    //  function to explicitly pass in scoped values.
+    //  - And if we put a derived at the root? Or something to transform our child code at the root, passing in our require function
+    //      as an argument... then we would almost always (unless they use window stuff) transform code to explicitly pass closed upon
+    //      values to derived, eliminating the need for eval.
+    //      - Of course, rewriting the code would require updating sourcemaps... probably... unless we can stick
+    //          everything we add at the end of an existing line?
+
+
+    // TODO: Object support, that does everything we added to arrays.
+    //  - This is easier, because objects already have an easy way to manipulate them. However... we will want an
+    //      "objectToArrayWithSort" function, that then uses it to do binary searches on the final array via the sort
+    //      function, which allows for fast deletions (and primitive updates).
+    //      - It's a pity that most users will still do Object.values(obj).sort()... but...
+    //          - Hmm... when we add .sort() to delta arrays, is it possible to allow that to propogate back up to the original
+    //              derived? I mean, if they don't access it at all between the creation and the sort, then we know the intermediate
+    //              default state doesn't matter, and then creating it in the sort order is MUCH easier, and eliminates the need
+    //              for the IndexTree...
+    //          - OR! Even better! we could have .sort() from the input delta array propogate down, so when a nested object is updated,
+    //              it can find its current index via searching via the sort order (and then linear searching it after it finds
+    //              the binarySearchLeft value).
 });
