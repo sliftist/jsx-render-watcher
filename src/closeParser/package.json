@@ -41,5 +41,8 @@
 	"peerDependencies": {
 		"ts-loader": "^6.2.2",
 		"webpack-cli": "^3.3.11"
+	},
+	"dependencies": {
+		"vsce": "^1.77.0"
 	}
 }
