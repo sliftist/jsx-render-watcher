@@ -1,4 +1,4 @@
-import { Node, Identifier, LineAndColumnData, SourceLocation, Program } from "@typescript-eslint/typescript-estree/dist/ts-estree/ts-estree";
+import { Node, Identifier, LineAndColumnData, SourceLocation, Program, Parameter } from "@typescript-eslint/typescript-estree/dist/ts-estree/ts-estree";
 import { parse, AST_NODE_TYPES } from "@typescript-eslint/typescript-estree";
 import { EnterExitTraverser } from "./enterExitTraverser";
 
@@ -341,10 +341,17 @@ export function parseClosed(
     function runTraverse() {
         new EnterExitTraverser({
             enter(statement, parent, property) {
+                if(statement.type === AST_NODE_TYPES.Identifier) {
+                    if(statement.name === "breakhere") {
+                        debugger;
+                    }
+                }
+
                 if(property === "id" || property === "params") {
                     isInDeclaration++;
                     if(isInDeclaration > 1) {
-                        debugger;
+                        //debugger;
+                        // Is this an error?
                     }
                 }
                 if(parent?.type === AST_NODE_TYPES.AssignmentExpression) {
@@ -453,11 +460,10 @@ export function parseClosed(
                 
                 // If it has params, it is probably a function call
                 if("params" in statement && statement.type !== AST_NODE_TYPES.TSMethodSignature) {
-                    for(let param of statement.params) {
+                    function parseParam(param: Node) {
                         if(param.type === AST_NODE_TYPES.Identifier) {
                             declareIdentifier(param, "function");
-                        }
-                        if(param.type === AST_NODE_TYPES.AssignmentPattern) {
+                        } else if(param.type === AST_NODE_TYPES.AssignmentPattern) {
                             if(param.left.type === AST_NODE_TYPES.Identifier) {
                                 declareIdentifier(param.left, "function");
                             }
@@ -465,6 +471,13 @@ export function parseClosed(
                             if(param.argument.type === AST_NODE_TYPES.Identifier) {
                                 declareIdentifier(param.argument, "function");
                             }
+                        }
+                    }
+                    for(let param of statement.params) {
+                        if(param.type === AST_NODE_TYPES.TSParameterProperty) {
+                            parseParam(param.parameter);
+                        } else {
+                            parseParam(param);
                         }
                     }
                 }
