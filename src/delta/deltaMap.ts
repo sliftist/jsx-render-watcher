@@ -86,7 +86,7 @@ function deltaArrayMapBase<T, V, ThisContext extends { [key: string]: unknown }>
     thisContextParams: ThisContext
 ) {
     let globalVariablesAccessed = new Set<string>();
-    todonext;
+    //todonext;
     // Also check if the function uses bind?
     parseClosed(
         "(" + mapFnc.toString() + ")",
@@ -104,7 +104,8 @@ function deltaArrayMapBase<T, V, ThisContext extends { [key: string]: unknown }>
     );
 
     if(globalVariablesAccessed.size > 0) {
-        throw new Error(`Tried to us a delta map function that uses variables in the parent scope. We can't tell if these change, so we can't safely apply the delta map function. Specific which values you are using to the delta map, and then access them in the this context of your map fnc. Variables ${Array.from(globalVariablesAccessed.keys()).map(x => JSON.stringify(x)).join(", ")}`);
+        // Temporarily comment out, so we can test some instrument code, forcing it to use global variables...
+        //throw new Error(`Tried to use a delta map function that uses variables in the parent scope. We can't tell if these change, so we can't safely apply the delta map function. Specific which values you are using to the delta map, and then access them in the this context of your map fnc. Variables ${Array.from(globalVariablesAccessed.keys()).map(x => JSON.stringify(x)).join(", ")}`);
     }
 
     

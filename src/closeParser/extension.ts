@@ -134,14 +134,10 @@ const fullDecorationsList = [
 	variableUsedOtherScope0, variableUsedOtherScope1, variableUsedOtherScope2, variableUsedOtherScope3, variableUsedOtherScope4
 ];
 
-
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
 	let status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
-
-	debugger;
-	
 
 	let recentRunLength = 10 * 1000;
 	let recentRuns: { start: number; end: number }[] = [];
@@ -360,9 +356,9 @@ function activateBase(context: vscode.ExtensionContext, timeCode: (code: () => v
 
 		} catch(e) {
 			if(e.stack) {
-				vscode.window.showInformationMessage(`Parse error ${e.stack}!`);
+				void vscode.window.showInformationMessage(`Parse error ${e.stack}!`);
 			} else {
-				vscode.window.showInformationMessage(`Parse error (${e.lineNumber}:${e.column}) ${e.message}`);
+				void vscode.window.showInformationMessage(`Parse error (${e.lineNumber}:${e.column}) ${e.message}`);
 			}
 		}
 

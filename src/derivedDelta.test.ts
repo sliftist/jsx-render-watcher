@@ -1,5 +1,5 @@
 import { eye0_pure, EyeType, eye, eye1_replace } from "./eye";
-import { derived, derivedRaw, DisposeSymbol, globalAliveDerivedCount, onDerivedsSettled } from "./derived";
+import { derived, derivedRaw, DisposeSymbol, globalAliveDerivedCount, settleDerivedsNow } from "./derived";
 import { derivedTotalReads } from "./derivedStats";
 import { GetCurLookupDelta, GetCurArrayDelta, ArrayDelta } from "./delta/deltaDefaults";
 import { ThrowIfNotImplementsData } from "pchannel";
@@ -8,6 +8,8 @@ import { deltaArrayMap } from "./delta/deltaMap";
 
 import { parse } from '@typescript-eslint/typescript-estree';
 import { parseClosed } from "./closeParser/parseClosed";
+import { createFactory } from "react";
+import { deltaMapVariableTest } from "./derivedDeltaFncs";
 
 
 //todonext
@@ -201,17 +203,17 @@ describe("derived delta", () => {
 
 
         arr[0] = { i: 101 };
-        await onDerivedsSettled();
+        await settleDerivedsNow();
         ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
 
 
         arr[1].i = 0;
-        await onDerivedsSettled();
+        await settleDerivedsNow();
         ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
 
 
         arr.splice(50, 1);
-        await onDerivedsSettled();
+        await settleDerivedsNow();
         ThrowIfNotImplementsData(lastSum, arrRaw.map(x => x.i).reduce((a, b) => a + b, 0));
 
 
@@ -258,7 +260,7 @@ describe("derived delta", () => {
             let readsForChange = derivedTotalReads.value;
             values.splice(~~(values.length / 2), 1);
             changeValue.value++;
-            await onDerivedsSettled();
+            await settleDerivedsNow();
 
             readsForChange = derivedTotalReads.value - readsForChange;
             
@@ -271,14 +273,14 @@ describe("derived delta", () => {
 
         // Stop using the deltaArrayMap
         useDerived.value = false;
-        await onDerivedsSettled();
+        await settleDerivedsNow();
 
         // Once we stop using the delta array map, it should go away, and not trigger any future reads.
         {
             let readForChangeWeArentWatching = derivedTotalReads.value;
 
             values.splice(~~(values.length / 2), 1);
-            await onDerivedsSettled();
+            await settleDerivedsNow();
             
             readForChangeWeArentWatching = derivedTotalReads.value - readForChangeWeArentWatching;
 
@@ -289,7 +291,7 @@ describe("derived delta", () => {
 
 
     it("deltaMap either handles closures or throws", async () => {
-        let values = eye0_pure(Array(100).fill(0).map((x, i) => i));
+        let values = eye0_pure(Array(3).fill(0).map((x, i) => i));
 
         let factor = eye({ value: 1 });
 
@@ -321,12 +323,12 @@ describe("derived delta", () => {
         //  make deltaArrayMap use eval to access the parent scope. I might never do either, but if it doesn't throw, and evaluates
         //  the output correctly... that's fine.
 
-        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), 4950);
+        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), 3);
 
         factor.value = 10;
-        await onDerivedsSettled();
+        await settleDerivedsNow();
 
-        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), 49500);
+        ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), 30);
 
 
         changeReads = derivedTotalReads.value - changeReads;
@@ -336,47 +338,84 @@ describe("derived delta", () => {
     });
 
 
-    it("deltaMap supports explicit variable passing", async () => {
-        const count = 1000;
-        let values = eye0_pure(Array(count).fill(0).map((x, i) => i));
+    //todonext
+    // This test (or some test), is way too slow. Okay so... first, run it just from node...
+    //  so we can benchmark the speed without wallabyjs instrumentation.
+    //  And then... start trying to benchmark it with stat-profile-2. And... use that as the only test case,
+    //  screw ramping up, get that working, and that's all.
 
-        
-        let factor = eye({ value: 1 });
-        let factorRaw = 1;
+
+    it("deltaMap supports explicit variable passing (10000)", async () => {
+        deltaMapVariableTest(10000);
+    });
+
+    it("deltaMap supports explicit variable passing (1000)", async () => {
+        deltaMapVariableTest(1000);
+    });
+
+    it("deltaMap supports explicit variable passing (100)", async () => {
+        deltaMapVariableTest(100);
+    });
+
+
+
+    async function deltaMapComparable(count: number) {
+        let values = Array(count).fill(0).map((x, i) => i);
+        let factor = { value: 1 };
 
         let baseReads = derivedTotalReads.value;
 
-        let output = derived(() => {
-            let f = factor.value;
-            let outputMap = deltaArrayMap(values, function(this, i) {
-                //console.log(i + "_" + this.f);
-                return i * this.f;
-            }, { f });
-            return { value: outputMap };
-        });
+        let output: {value: number[] } = {value: []};
+        function derivedCalculation() {
+            output.value = values.map(i => i * factor.value);
+        }
 
-        baseReads = derivedTotalReads.value - baseReads;
-
-
-        let changeReads = derivedTotalReads.value;
-
-        // If it doesn't throw, it means the surrounding closure rewrote the delta call to pass f as a variable, or at least
-        //  make deltaArrayMap use eval to access the parent scope. I might never do either, but if it doesn't throw, and evaluates
-        //  the output correctly... that's fine.
+        derivedCalculation();
 
         ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), Array(count).fill(0).map((x, i) => i).reduce((a, b) => a + b, 0));
 
-        changeReads = derivedTotalReads.value - changeReads;
-        
-        // deltaArrayMap must really only apply the delta, and not just run over all values every time
-        ThrowIfNotImplementsData(changeReads < baseReads / 10, true);
-
-        
-        factorRaw = 10;
         factor.value = 10;
-        await onDerivedsSettled();
+
+        derivedCalculation();
 
         ThrowIfNotImplementsData(output.value.reduce((a, b) => a + b, 0), Array(count).fill(0).map((x, i) => i * 10).reduce((a, b) => a + b, 0));
+    }
+
+    it("deltaMap comparable (10000)", async () => {
+        deltaMapComparable(10000);
+    });
+
+    it("deltaMap comparable (1000)", async () => {
+        deltaMapComparable(1000);
+    });
+
+    it("deltaMap comparable (100)", async () => {
+        deltaMapComparable(100);
+    });
+
+    async function fillMap(count: number) {
+        let values = Array(count).fill(0).map((x, i) => i);
+        let factor = { value: 1 };
+
+        let output: {value: number[] } = {value: []};
+        function derivedCalculation() {
+            output.value = values.map(i => i * factor.value);
+        }
+
+        derivedCalculation();
+    }
+
+
+    it("fill map (10000)", async () => {
+        fillMap(10000);
+    });
+
+    it("fill map (1000)", async () => {
+        fillMap(1000);
+    });
+
+    it("fill map (100)", async () => {
+        fillMap(100);
     });
 
     // TODO: After we support the above regular map case, support the case of a mapped inside of a derived, which

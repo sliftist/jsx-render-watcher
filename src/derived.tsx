@@ -24,28 +24,28 @@ type ObserverThisContext = {
     updateOrder?: string;
 };
 
-let onDerivedsSettledObj: {
-    resolve(): void; reject(err: unknown): void; promise: Promise<void>
-}|undefined = undefined;
-
 // TODO: This should probably handle callback deduping itself, so we don't queue a callback twice...
 let scheduledCallbacks: {callback: () => void; order: string|undefined}[] | undefined = undefined;
 function scheduleCallback(this: any, callback: () => void, order: string|undefined = undefined) {
+    let ourCallbacksObject: object|undefined;
     if(!scheduledCallbacks) {
-        scheduledCallbacks = [];
-        let callbacks = scheduledCallbacks;
-        Promise.resolve().then(() => {
+        ourCallbacksObject = scheduledCallbacks = [];
+        //let callbacks = scheduledCallbacks;
+        /*
+        void Promise.resolve().then(() => {
             scheduledCallbacks = undefined;
             for(let callback of callbacks) {
                 callback.callback();
             }
 
             if(scheduledCallbacks === undefined && onDerivedsSettledObj) {
+                // eslint-disable-next-line @typescript-eslint/unbound-method
                 let { resolve } = onDerivedsSettledObj;
                 onDerivedsSettledObj = undefined;
                 resolve();
             }
         });
+        */
     }
     insertIntoListMapped(scheduledCallbacks, { callback, order }, a => a.order, (a, b) => {
         if(a === undefined && b === undefined) return 0;
@@ -57,21 +57,31 @@ function scheduleCallback(this: any, callback: () => void, order: string|undefin
             : 0
         );
     }, "add");
+    if(ourCallbacksObject) {
+        Promise.resolve().then(() => {
+            handleCallbacksNow(ourCallbacksObject);
+        }, (e) => { throw e });
+    }
 }
 
-export function onDerivedsSettled(): Promise<void> {
-    type BaseType = Exclude<typeof onDerivedsSettledObj, undefined>;
-    if(onDerivedsSettledObj) {
-        return onDerivedsSettledObj.promise;
+function handleCallbacksNow(callbacksObject: object|undefined) {
+    if(!scheduledCallbacks || callbacksObject !== scheduledCallbacks) return;
+    // NOTE: Handling callbacks at the root like this means although in relation to each other our callbacks are handled as
+    //  expected, we may trigger external callbacks in a strange order (if they further trigger events, which are
+    //  handled synchronously).
+    try {
+        while(true) {
+            let callback = scheduledCallbacks.shift();
+            if(!callback) break;
+            callback.callback();
+        }
+    } finally {
+        scheduledCallbacks = undefined;
     }
-    if(scheduledCallbacks === undefined) return Promise.resolve();
-    let obj = {} as any as BaseType;
-    obj.promise = new Promise((resolve, reject) => {
-        obj.resolve = resolve;
-        obj.reject = reject;
-    });
-    onDerivedsSettledObj = obj;
-    return obj.promise;
+}
+
+export function settleDerivedsNow() {
+    handleCallbacksNow(scheduledCallbacks);
 }
 
 const derivedEyeSymbol = Symbol("derivedEyeSymbol");
@@ -400,17 +410,19 @@ export function derivedRaw<T extends unknown, This extends ObserverThisContext>(
             parentDerived.strongAttachedChildrenCurrentlyAccessed.add(derivedId);
         }
 
+        const forceUpdateCallback = () => {
+            //console.info(`Inside triggering of derived ${name}`);
+            pendingChange = false;
+            this.forceUpdate();
+        };
+
         const onChanged = (pathHash: string) => {
             if(pendingChange) return;
             pendingChange = true;
             let name = (this as any).name || this.constructor.name;
 
             //console.info(`Schedule triggering of derived ${name}`);
-            scheduleCallback(() => {
-                //console.info(`Inside triggering of derived ${name}`);
-                pendingChange = false;
-                this.forceUpdate();
-            }, result.depth.toFixed(10));
+            scheduleCallback(forceUpdateCallback, result.depth.toFixed(10));
         };
 
         thisContext = this;

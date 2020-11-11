@@ -4,11 +4,61 @@ import { eye, EyeLevel } from "./eye";
 import { derivedRaw, derived } from "./derived";
 
 import "./lib/testHelper_g";
-import "./derivedDelta.test";
+//import "./derivedDelta.test";
 //import "./lib/indexChanges.test";
 
+import { instrument, FlameChart } from "stat-profile";
+import { deltaMapVariableTest } from "./derivedDeltaFncs";
+
+function test() {
+    return {
+        columnReduceMethods: {
+            ["x"]: (x: any) => x
+        }
+    };
+}
+
+interface Test {
+    render(): any;
+}
+
+class Okay implements Test {
+    render() {
+        throw new Error("Method not implemented.");
+    }
+}
 
 
+main().catch(e => { throw e });
+async function main() {
+
+    let data: any|undefined = undefined;
+
+    let request = new XMLHttpRequest();
+    request.open("GET", "./profileBundle.js", false)
+    request.send();
+
+    var fnc = new Function("exports", request.responseText) as any;
+
+    render();
+
+    data = await instrument(fnc);
+
+    render();
+
+    console.log(data);
+
+    function render() {
+        preact.render(
+            <FlameChart markBuffer={data} />,
+            document.getElementById("root") as any
+        );
+    }
+}
+
+//todonext;
+// Import the stat-profile-2 stuff, and try to use it on trivial cases
+// Call some of the import "./derivedDelta.test"; stuff inside of
 
 //todonext;
 // Uh... screw it, this MAY work in React, it may not.
@@ -217,7 +267,7 @@ export class TestMain extends preact.Component<{ y: number }, {}> {
 //todonext;
 // We should have a globally available delta context thing. This will allow objects to store their state,
 //  and then at any time access their previous state. And also they can use it to store global changes
-//  in that context.
+//  in that context. 
 //  - OH! And, it can use a WeakMap, with an object key, so when the context doesn't exist,
 //      everything that was using it can go away (so we'll have to never close upon the context?, or... something...)
 // The starting candidate should be our todolist, in which changing rerendering because of a change in one item

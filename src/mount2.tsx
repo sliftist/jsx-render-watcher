@@ -1,4 +1,4 @@
-/** Copied directly out of query-sub, from src/sync/html/mount2.tsx */
+/** Copied out of query-sub, from src/sync/html/mount2.tsx, and then rewritten to be shorter and faster. */
 
 /**     SUMMARY
  * 

@@ -9,6 +9,7 @@ function getConfig(env, argv) {
             index: "./index.tsx",
             debugUtils: "./src/debugUtils/debugUtils.tsx",
             test: "./src/test.tsx",
+            profileBundle: "./src/profileBundle.ts"
         },
         output: {
             path: path.resolve(__dirname, "dist"),
@@ -43,7 +44,10 @@ function getConfig(env, argv) {
         },
         plugins: [
             //new (require('webpack-bundle-analyzer').BundleAnalyzerPlugin)()
-        ]
+        ],
+        optimization: {
+            minimize: false
+        }
     };
     return config;
 }

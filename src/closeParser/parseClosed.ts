@@ -553,7 +553,10 @@ export function parseClosed(
                 }
 
                 // Ignore all "TS" stuff. It isn't realy, and will go away after compilation.
-                if(statement.type.startsWith("TS")) {
+                if(statement.type.startsWith("TS")
+                    // Exception don't ignore TSAsExpression, as it can have real code inside of it
+                    && statement.type !== "TSAsExpression"
+                ) {
                     return false;
                 }
 
