@@ -275,6 +275,10 @@ export function parseClosed(
     }
 
     function declareIdentifier(identifier: Node, type: "function"|"brace", nameOverride?: string) {
+        if(identifier.type === AST_NODE_TYPES.Identifier && identifier.name === "breakhere") {
+            debugger;
+        }
+
         if(!nameOverride) {
             if(usedRanges.has(getHideHash(identifier))) return;
             usedRanges.add(getHideHash(identifier));
@@ -292,12 +296,12 @@ export function parseClosed(
     }
     
     function accessIdentifier(identifier: Identifier) {
-        if(usedRanges.has(getHideHash(identifier))) return;
-        usedRanges.add(getHideHash(identifier));
-
         if(identifier.name === "breakhere") {
             debugger;
         }
+        
+        if(usedRanges.has(getHideHash(identifier))) return;
+        usedRanges.add(getHideHash(identifier));
 
         if(phase === "populate") {
 
@@ -341,11 +345,7 @@ export function parseClosed(
     function runTraverse() {
         new EnterExitTraverser({
             enter(statement, parent, property) {
-                if(statement.type === AST_NODE_TYPES.Identifier) {
-                    if(statement.name === "breakhere") {
-                        debugger;
-                    }
-                }
+                
 
                 if(property === "id" || property === "params") {
                     isInDeclaration++;
@@ -538,7 +538,7 @@ export function parseClosed(
                 }
 
                 if(statement.type === AST_NODE_TYPES.ClassProperty) {
-                    if(statement.key.type === AST_NODE_TYPES.Identifier) {
+                    if(statement.key.type === AST_NODE_TYPES.Identifier && !statement.computed) {
                         usedRanges.add(getHideHash(statement.key));
                     }
                 }

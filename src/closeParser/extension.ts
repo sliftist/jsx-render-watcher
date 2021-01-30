@@ -211,10 +211,6 @@ function activateBase(context: vscode.ExtensionContext, timeCode: (code: () => v
 
 		let { languageId } = doc;
 		if(languageId !== "typescriptreact" && languageId !== "typescript") return;
-
-		function getPos(pos: LineAndColumnData): vscode.Position {
-			return new vscode.Position(pos.line - 1, pos.column);
-		}
 		
 		let decorations: Map<vscode.TextEditorDecorationType, vscode.DecorationOptions[]> = new Map();
 		function baseAddDecoration(type: vscode.TextEditorDecorationType, option: vscode.DecorationOptions) {
